@@ -4,23 +4,21 @@
   function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=()=>rej(new Error("load fail "+src));document.head.appendChild(s);});}
   const MonacoReady=(function(){let p=null;return function(){if(p)return p;p=new Promise(async(res,rej)=>{if(window.monaco&&window.monaco.editor)return res(window.monaco);if(!window.require){try{await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs/loader.min.js");}catch(e){return rej(e);}}try{window.require.config({paths:{vs:"https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs"}});window.require(["vs/editor/editor.main"],()=>window.monaco&&window.monaco.editor?res(window.monaco):rej(new Error("monaco init failed")));}catch(e){rej(e);}});return p;};})();
 
+  // Simple ajax (relative URLs)
   function ajax(method, url, data) {
     return $.ajax({ method, url, data: data ? JSON.stringify(data) : undefined, contentType: data ? "application/json" : undefined });
   }
 
   RED.plugins.registerPlugin("file-browser", {
     onadd: function() {
-      // ===== Layout containers =====
       const $root   = $("<div>").css({position:"relative", height:"100%", display:"flex", gap:"8px"});
 
-      // Left panel (tree + controls)
+      // Left panel (tree + base controls)
       const $left   = $("<div>").css({width:"38%", minWidth:"280px", height:"100%", display:"flex", flexDirection:"column", borderRight:"1px solid var(--red-ui-secondary-background)"});
       const $leftHdr= $("<div>").css({padding:"8px", display:"grid", gridTemplateColumns:"1fr auto auto", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
       const $baseLabel = $('<span style="font-size:0.8em;opacity:0.8;white-space:nowrap;align-self:center;">Base:</span>');
-      const $baseInput = $('<input type="text" readonly>')
-        .css({gridColumn:"1 / span 1", width:"100%", fontSize:"0.85em", padding:"4px 6px"});
-      const $btnChangeBase= $('<button class="red-ui-button" title="Change base…"><i class="fa fa-folder-open"></i></button>')
-        .css({justifySelf:"end"});
+      const $baseInput = $('<input type="text" readonly>').css({gridColumn:"1 / span 1", width:"100%", fontSize:"0.85em", padding:"4px 6px"});
+      const $btnChangeBase= $('<button class="red-ui-button" title="Change base…"><i class="fa fa-folder-open"></i></button>').css({justifySelf:"end"});
       const $btnRefreshL  = $('<button class="red-ui-button" title="Refresh"><i class="fa fa-refresh"></i></button>');
       const $treeWrap= $("<div>").css({flex:"1 1 auto", overflow:"auto"});
       const $tree   = $("<div>").attr("id","fb-tree").css({padding:"6px"});
@@ -29,27 +27,32 @@
       $treeWrap.append($tree);
       $left.append($leftHdr, $treeWrap);
 
-      // Right panel (editor + file ops)
+      // Right panel (editor + ops)
       const $right  = $("<div>").css({flex:"1 1 auto", height:"100%", display:"flex", flexDirection:"column"});
       const $toolbar= $("<div>").css({padding:"6px", display:"flex", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
       const $crumb  = $("<div>").css({fontSize:"0.85em", opacity:0.8, flex:"1 1 auto", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"});
       const $btnNewFile = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
       const $btnNewDir  = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
-      const $btnSave    = $('<button class="red-ui-button primary"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
+      // Save: gray/disabled by default; becomes red only when there are unsaved edits
+      const $btnSave    = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
       const $editorHost = $("<div>").attr("id","fb-editor").css({flex:"1 1 auto", position:"relative", minHeight:"220px"});
       const $status     = $("<div>").css({padding:"4px 8px", borderTop:"1px solid var(--red-ui-secondary-background)", fontSize:"0.85em", opacity:0.8});
 
       $toolbar.append($crumb, $btnNewFile, $btnNewDir, $btnSave);
       $right.append($toolbar, $editorHost, $status);
-
       $root.append($left, $right);
 
-      // ===== State =====
+      // State
       let baseInfo = { baseDir:"", userDir:"" };
       let currentDir = ".";
       let currentFile = null;
       let monacoEditor = null, textarea = null, editorKind = "none";
       let dirty = false;
+
+      // Track on-disk state of current file (mtime/size)
+      let lastDisk = { mtime: null, size: null };
+      let statTimer = null;
+      let onDiskChanged = false;
 
       function setStatus(t){ $status.text(t||""); }
       function notifyErr(x){ RED.notify(x,"error"); }
@@ -75,7 +78,6 @@
       }
 
       function renderTree(list){
-        // Update base info + input
         baseInfo.baseDir = list.baseDir || baseInfo.baseDir;
         baseInfo.userDir = list.userDir || baseInfo.userDir;
         $baseInput.val(baseInfo.baseDir || "");
@@ -94,14 +96,52 @@
         rows.forEach(r=>$tree.append(r));
       }
 
-      // ===== Config bootstrap =====
       function loadConfigThenList() {
         ajax("GET", "filebrowser/config")
           .done((cfg)=>{ baseInfo = cfg || baseInfo; $baseInput.val(baseInfo.baseDir||""); loadList("."); })
           .fail(()=>{ loadList("."); });
       }
 
-      // ===== File operations =====
+      // Save button appearance
+      function updateSaveAppearance() {
+        if (dirty) {
+          // red, enabled
+          $btnSave.prop("disabled", false)
+                  .css({ backgroundColor:"#d9534f", color:"#fff", borderColor:"#d43f3a" });
+        } else {
+          // gray, disabled
+          $btnSave.prop("disabled", true)
+                  .css({ backgroundColor:"", color:"", borderColor:"" });
+        }
+        // Status hint if file changed externally
+        if (onDiskChanged) {
+          $status.text(($status.text()||"") + " (changed on disk)");
+        }
+      }
+      function markDirty(val) {
+        dirty = !!val;
+        updateSaveAppearance();
+      }
+
+      function stopStatTimer(){ if (statTimer){ clearInterval(statTimer); statTimer=null; } }
+      function startStatTimer(){
+        stopStatTimer();
+        if (!currentFile) return;
+        statTimer = setInterval(statCurrent, 5000); // check every 5s
+      }
+      function statCurrent() {
+        if (!currentFile) return;
+        ajax("GET", "filebrowser/stat?path="+encodeURIComponent(currentFile))
+          .done(res=>{
+            const changed = (lastDisk.mtime !== null && (res.mtime !== lastDisk.mtime || res.size !== lastDisk.size));
+            onDiskChanged = !!changed;
+            if (onDiskChanged) setStatus("Opened: "+currentFile+" (changed on disk)");
+            else setStatus("Opened: "+currentFile);
+            updateSaveAppearance();
+          })
+          .fail(()=>{ /* ignore */ });
+      }
+
       function loadList(dir) {
         ajax("GET", "filebrowser/list?path="+encodeURIComponent(dir))
           .done((res)=>{ renderTree(res); setStatus("Listed: "+res.cwd); })
@@ -113,12 +153,12 @@
         if (editorKind==="textarea" && textarea)   return Promise.resolve("textarea");
         return MonacoReady().then(()=>{
           monacoEditor = window.monaco.editor.create($editorHost[0], { value:"", language:"plaintext", automaticLayout:true, minimap:{enabled:false} });
-          monacoEditor.onDidChangeModelContent(()=>{ if (currentFile){ dirty=true; $btnSave.prop("disabled", false);} });
+          monacoEditor.onDidChangeModelContent(()=>{ if (currentFile){ markDirty(true);} });
           editorKind="monaco"; return "monaco";
         }).catch(()=>{
           textarea = $("<textarea>").css({position:"absolute", inset:"0", width:"100%", height:"100%", fontFamily:"monospace", fontSize:"12px", padding:"8px", boxSizing:"border-box"});
           $editorHost.empty().append(textarea);
-          textarea.on("input", ()=>{ if (currentFile){ dirty=true; $btnSave.prop("disabled",false);} });
+          textarea.on("input", ()=>{ if (currentFile){ markDirty(true);} });
           editorKind="textarea"; return "textarea";
         });
       }
@@ -139,21 +179,37 @@
 
       function openFile(relPath) {
         ajax("GET", "filebrowser/open?path="+encodeURIComponent(relPath))
-          .done((res)=>{ ensureEditorReady().then(()=>{ currentFile=relPath; dirty=false; $btnSave.prop("disabled", true); setEditorContent(res.text||"", relPath); setStatus("Opened: "+relPath); }); })
+          .done((res)=>{
+            ensureEditorReady().then(()=>{
+              currentFile=relPath;
+              lastDisk = { mtime: res.mtime || null, size: res.size || null };
+              onDiskChanged = false;
+              markDirty(false); // resets & updates save appearance
+              setEditorContent(res.text||"", relPath);
+              setStatus("Opened: "+relPath);
+              startStatTimer();
+            });
+          })
           .fail((xhr)=>{ console.error("[file-browser] open error", xhr.status, xhr.responseText); notifyErr("Open error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
+
       function doSave(){
         if (!currentFile) return;
         const text = getEditorContent();
         ajax("POST","filebrowser/save",{ path: currentFile, text })
-          .done(()=>{ dirty=false; $btnSave.prop("disabled", true); setStatus("Saved: "+currentFile); })
+          .done((r)=>{
+            lastDisk = { mtime: r.mtime || Date.now(), size: r.size || (text||"").length };
+            onDiskChanged = false;
+            markDirty(false);
+            setStatus("Saved: "+currentFile);
+            setTimeout(statCurrent, 500); // align with FS mtime soon after save
+          })
           .fail((xhr)=>{ console.error("[file-browser] save error", xhr.status, xhr.responseText); notifyErr("Save error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
-      // ===== Left-panel controls =====
+      // Left-panel controls
       $btnRefreshL.on("click", ()=> loadList(currentDir));
       $btnChangeBase.on("click", ()=>{
-        // Default suggestion = absolute path of the currently viewed folder
         const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "")
                         + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
         const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
@@ -164,7 +220,7 @@
           .fail((xhr)=> notifyErr("Set base error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
-      // ===== Right-panel controls =====
+      // Right-panel controls
       $btnSave.on("click", doSave);
       $btnNewFile.on("click", ()=>{
         const name = prompt("New file name:"); if (!name) return;
@@ -179,9 +235,8 @@
           .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
-      RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+currentFile,"warning"); });
+      RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning"); });
 
-      // Sidebar tab + first-time auto-load
       RED.actions.add("file-browser:show", ()=> RED.sidebar.show("file-browser"));
       RED.sidebar.addTab({
         id:"file-browser", name:"Files", label:"Files", iconClass:"fa fa-files-o",
@@ -189,7 +244,6 @@
         onshow: function(){ if (!$tree.children().length) loadConfigThenList(); }
       });
 
-      // Also trigger once after add (covers when tab already visible)
       setTimeout(()=>{ if (!$tree.children().length) loadConfigThenList(); }, 0);
     }
   });

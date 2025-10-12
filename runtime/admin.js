@@ -1,22 +1,13 @@
-/**
- * Runtime admin endpoints for the File Browser sidebar.
- * Now with self-serve config: baseDir is stored in /data/.filebrowser.config.json
- * No settings.js edits required.
- */
 module.exports = function(RED) {
   const path = require("path");
   const fs = require("fs");
   const fsp = fs.promises;
 
-  // Where we'll persist config
   const USER_DIR   = path.resolve(RED.settings.userDir || process.cwd());
   const CONFIG_FILE = path.join(USER_DIR, ".filebrowser.config.json");
-
-  // Optional defaults (kept for compatibility if user still put them in settings.js)
   const settingsDefault = (RED.settings.get("fileBrowser") || {});
   const DEFAULT_MAX = settingsDefault.maxBytes || 5 * 1024 * 1024; // 5MB
 
-  // ---- config helpers ----
   async function readJSON(file) {
     try { return JSON.parse(await fsp.readFile(file, "utf8")); }
     catch { return null; }
@@ -27,7 +18,6 @@ module.exports = function(RED) {
     await fsp.rename(tmp, file);
   }
   async function getConfig() {
-    // Settings default (legacy) -> stored file -> fallback userDir
     const fromFile = await readJSON(CONFIG_FILE);
     const baseDir  = path.resolve(
       (fromFile && fromFile.baseDir) ||
@@ -47,7 +37,6 @@ module.exports = function(RED) {
     return merged;
   }
 
-  // ---- path helpers ----
   function withinBase(abs, base) {
     const norm = path.normalize(abs);
     const baseN = path.normalize(base);
@@ -58,7 +47,6 @@ module.exports = function(RED) {
     catch { return null; }
   }
 
-  // ---- core ops (use dynamic baseDir every call) ----
   async function list(dirRel) {
     const { baseDir } = await getConfig();
     const dirAbs = path.resolve(baseDir, dirRel || ".");
@@ -94,7 +82,7 @@ module.exports = function(RED) {
     if (st.size > maxBytes) throw new Error("File too large");
     const buf = await fsp.readFile(abs);
     if (buf.includes(0)) throw new Error("Binary file not supported");
-    return buf.toString("utf8");
+    return { text: buf.toString("utf8"), size: st.size, mtime: st.mtimeMs };
   }
 
   async function save(rel, text) {
@@ -107,7 +95,8 @@ module.exports = function(RED) {
     const buf = Buffer.from(String(text), "utf8");
     if (buf.length > maxBytes) throw new Error("Content too large");
     await fsp.writeFile(abs, buf);
-    return { ok: true };
+    const st = await statSafe(abs);
+    return { ok: true, size: st ? st.size : buf.length, mtime: st ? st.mtimeMs : Date.now() };
   }
 
   async function newFile(dirRel, name, overwrite=false) {
@@ -118,7 +107,8 @@ module.exports = function(RED) {
     const st = await statSafe(abs);
     if (st && !overwrite) throw new Error("File exists");
     await fsp.writeFile(abs, "");
-    return { ok: true, path: path.relative(baseDir, abs).replace(/\\/g,"/") };
+    const st2 = await statSafe(abs);
+    return { ok: true, path: path.relative(baseDir, abs).replace(/\\/g,"/"), size: st2?.size||0, mtime: st2?.mtimeMs||Date.now() };
   }
 
   async function newFolder(dirRel, name) {
@@ -138,7 +128,8 @@ module.exports = function(RED) {
     const dstAbs = path.resolve(path.dirname(srcAbs), newName);
     if (!withinBase(dstAbs, baseDir)) throw new Error("Path escapes baseDir");
     await fsp.rename(srcAbs, dstAbs);
-    return { ok:true, path: path.relative(baseDir, dstAbs).replace(/\\/g,"/") };
+    const st = await statSafe(dstAbs);
+    return { ok:true, path: path.relative(baseDir, dstAbs).replace(/\\/g,"/"), size: st?.size||0, mtime: st?.mtimeMs||Date.now() };
   }
 
   async function remove(rel) {
@@ -152,17 +143,24 @@ module.exports = function(RED) {
     return { ok:true };
   }
 
-  // ---- Routes (admin-auth protected) ----
+  // NEW: stat endpoint for a single file
+  async function statOne(rel) {
+    const { baseDir } = await getConfig();
+    const abs = path.resolve(baseDir, rel);
+    if (!withinBase(abs, baseDir)) throw new Error("Path escapes baseDir");
+    const st = await fsp.stat(abs);
+    if (!st.isFile()) throw new Error("Not a file");
+    return { size: st.size, mtime: st.mtimeMs };
+  }
+
   const needsRead  = RED.auth.needsPermission("file-browser.read");
   const needsWrite = RED.auth.needsPermission("file-browser.write");
 
-  // config get/set
   RED.httpAdmin.get("/filebrowser/config", needsRead, async (req,res)=>{
     try { res.json(await getConfig()); }
     catch(e){ res.status(400).json({ error: String(e.message||e) }); }
   });
 
-  // Only allow baseDir within userDir for safety
   RED.httpAdmin.post("/filebrowser/set-base", needsWrite, async (req,res)=>{
     try {
       const { path: proposed, maxBytes } = req.body || {};
@@ -178,14 +176,18 @@ module.exports = function(RED) {
     }
   });
 
-  // File ops
   RED.httpAdmin.get("/filebrowser/list", needsRead, async (req,res)=>{
     try { res.json(await list(req.query.path || ".")); }
     catch(e){ res.status(400).json({ error: String(e.message||e) }); }
   });
 
   RED.httpAdmin.get("/filebrowser/open", needsRead, async (req,res)=>{
-    try { res.json({ text: await open(req.query.path) }); }
+    try { res.json(await open(req.query.path)); }
+    catch(e){ res.status(400).json({ error: String(e.message||e) }); }
+  });
+
+  RED.httpAdmin.get("/filebrowser/stat", needsRead, async (req,res)=>{
+    try { res.json(await statOne(req.query.path)); }
     catch(e){ res.status(400).json({ error: String(e.message||e) }); }
   });
 
@@ -227,7 +229,7 @@ module.exports = function(RED) {
 
   getConfig().then(cfg=>{
     RED.log.info(`[file-browser] baseDir=${cfg.baseDir} (userDir=${USER_DIR})`);
-  }).catch(()=> {
+  }).catch(()=>{
     RED.log.info(`[file-browser] using userDir=${USER_DIR}`);
   });
 };
