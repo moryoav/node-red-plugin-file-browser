@@ -1,4 +1,4 @@
-# node-red-plugin-file-browser
+# @moryoav/node-red-plugin-file-browser
 
 A minimal Node-RED editor plugin that adds a Files sidebar tab:
 
@@ -16,14 +16,14 @@ No extra Dashboard nodes needed. Works fully inside the Node-RED editor (http://
 
 From Manage Palette (recommended)
 1. Open Node-RED → Menu → Manage palette → Install
-2. Search for node-red-plugin-file-browser
+2. Search for @moryoav/node-red-plugin-file-browser
 3. Install and reload the editor.
 
 From npm/CLI
 Install into your userDir (Docker userDir is /data):
 
     cd ~/.node-red            # or /data in Docker
-    npm i node-red-plugin-file-browser
+    npm i @moryoav/node-red-plugin-file-browser
     # restart Node-RED
 
 If you have the plugin sources locally (e.g., inside a project), you can install from path:
@@ -67,7 +67,7 @@ Persistence: The selected base folder is saved to ~/.node-red/.filebrowser.confi
 ## Uninstall
 
     cd ~/.node-red  # or /data
-    npm remove node-red-plugin-file-browser
+    npm remove @moryoav/node-red-plugin-file-browser
     # restart Node-RED
 
 ---
