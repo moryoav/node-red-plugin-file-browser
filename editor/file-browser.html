@@ -106,16 +106,22 @@
       function updateSaveAppearance() {
         if (dirty) {
           // red, enabled
-          $btnSave.prop("disabled", false)
-                  .css({ backgroundColor:"#d9534f", color:"#fff", borderColor:"#d43f3a" });
+			$btnSave.prop("disabled", false).css({
+			  backgroundColor: "#c9302c",   // a touch darker than #d9534f
+			  color: "#ffffff",             // high-contrast text
+			  borderColor: "#b52b27",
+			  fontWeight: "600",
+			  textShadow: "0 1px 0 rgba(0,0,0,0.35)"
+			});
         } else {
           // gray, disabled
-          $btnSave.prop("disabled", true)
-                  .css({ backgroundColor:"", color:"", borderColor:"" });
-        }
-        // Status hint if file changed externally
-        if (onDiskChanged) {
-          $status.text(($status.text()||"") + " (changed on disk)");
+			$btnSave.prop("disabled", true).css({
+			  backgroundColor: "",
+			  color: "",
+			  borderColor: "",
+			  fontWeight: "",
+			  textShadow: ""
+			});
         }
       }
       function markDirty(val) {
