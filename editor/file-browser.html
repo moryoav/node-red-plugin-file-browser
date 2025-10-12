@@ -15,15 +15,35 @@
 
       // Left panel (tree + base controls)
       const $left   = $("<div>").css({width:"38%", minWidth:"280px", height:"100%", display:"flex", flexDirection:"column", borderRight:"1px solid var(--red-ui-secondary-background)"});
-      const $leftHdr= $("<div>").css({padding:"8px", display:"grid", gridTemplateColumns:"1fr auto auto", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
+      const $leftHdr= $("<div>").css({
+        padding:"8px",
+        display:"grid",
+        gridTemplateColumns:"auto 1fr auto auto", /* label | input | change | refresh */
+        gap:"6px",
+        alignItems:"center",
+        borderBottom:"1px solid var(--red-ui-secondary-background)"
+      });
       const $baseLabel = $('<span style="font-size:0.8em;opacity:0.8;white-space:nowrap;align-self:center;">Base:</span>');
-      const $baseInput = $('<input type="text" readonly>').css({gridColumn:"1 / span 1", width:"100%", fontSize:"0.85em", padding:"4px 6px"});
-      const $btnChangeBase= $('<button class="red-ui-button" title="Change base…"><i class="fa fa-folder-open"></i></button>').css({justifySelf:"end"});
+
+      // Input wrapped to align with buttons
+      const $baseWrap = $("<div>").css({display:"flex", alignItems:"center", width:"100%"});
+      const $baseInput = $('<input type="text" readonly>').css({
+        width:"100%",
+        height:"28px",
+        lineHeight:"26px",
+        padding:"0 8px",
+        fontSize:"0.85em",
+        boxSizing:"border-box",
+        margin:0
+      });
+      $baseWrap.append($baseInput);
+
+      const $btnChangeBase= $('<button class="red-ui-button" title="Change base…"><i class="fa fa-folder-open"></i></button>');
       const $btnRefreshL  = $('<button class="red-ui-button" title="Refresh"><i class="fa fa-refresh"></i></button>');
       const $treeWrap= $("<div>").css({flex:"1 1 auto", overflow:"auto"});
       const $tree   = $("<div>").attr("id","fb-tree").css({padding:"6px"});
 
-      $leftHdr.append($baseLabel, $baseInput, $btnChangeBase, $btnRefreshL);
+      $leftHdr.append($baseLabel, $baseWrap, $btnChangeBase, $btnRefreshL);
       $treeWrap.append($tree);
       $left.append($leftHdr, $treeWrap);
 
@@ -31,14 +51,18 @@
       const $right  = $("<div>").css({flex:"1 1 auto", height:"100%", display:"flex", flexDirection:"column"});
       const $toolbar= $("<div>").css({padding:"6px", display:"flex", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
       const $crumb  = $("<div>").css({fontSize:"0.85em", opacity:0.8, flex:"1 1 auto", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"});
-      const $btnNewFile = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
-      const $btnNewDir  = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
-      // Save: gray/disabled by default; becomes red only when there are unsaved edits
+
+      const $btnNewFile    = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
+      const $btnRenameFile = $('<button class="red-ui-button"><i class="fa fa-pencil"></i> Rename file</button>').prop("disabled", true);
+      const $btnNewDir     = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
+
+      // Save: theme-aware danger class when dirty
       const $btnSave    = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
+
       const $editorHost = $("<div>").attr("id","fb-editor").css({flex:"1 1 auto", position:"relative", minHeight:"220px"});
       const $status     = $("<div>").css({padding:"4px 8px", borderTop:"1px solid var(--red-ui-secondary-background)", fontSize:"0.85em", opacity:0.8});
 
-      $toolbar.append($crumb, $btnNewFile, $btnNewDir, $btnSave);
+      $toolbar.append($crumb, $btnNewFile, $btnRenameFile, $btnNewDir, $btnSave);
       $right.append($toolbar, $editorHost, $status);
       $root.append($left, $right);
 
@@ -90,7 +114,11 @@
         list.items.forEach((it)=>{
           const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
           $r.append(iconFor(it), $('<span>').text(it.name).css({flex:"1 1 auto"}));
-          $r.on('click', ()=>{ it.type==="dir" ? loadList(it.path) : openFile(it.path); });
+          if (it.type==="dir") {
+            $r.on('click', ()=> loadList(it.path));
+          } else {
+            $r.on('click', ()=> openFile(it.path));
+          }
           rows.push($r);
         });
         rows.forEach(r=>$tree.append(r));
@@ -102,26 +130,12 @@
           .fail(()=>{ loadList("."); });
       }
 
-      // Save button appearance
+      // Save button appearance (theme-aware)
       function updateSaveAppearance() {
         if (dirty) {
-          // red, enabled
-			$btnSave.prop("disabled", false).css({
-			  backgroundColor: "#c9302c",   // a touch darker than #d9534f
-			  color: "#ffffff",             // high-contrast text
-			  borderColor: "#b52b27",
-			  fontWeight: "600",
-			  textShadow: "0 1px 0 rgba(0,0,0,0.35)"
-			});
+          $btnSave.prop("disabled", false).addClass("red-ui-button-danger");
         } else {
-          // gray, disabled
-			$btnSave.prop("disabled", true).css({
-			  backgroundColor: "",
-			  color: "",
-			  borderColor: "",
-			  fontWeight: "",
-			  textShadow: ""
-			});
+          $btnSave.prop("disabled", true).removeClass("red-ui-button-danger");
         }
       }
       function markDirty(val) {
@@ -143,7 +157,7 @@
             onDiskChanged = !!changed;
             if (onDiskChanged) setStatus("Opened: "+currentFile+" (changed on disk)");
             else setStatus("Opened: "+currentFile);
-            updateSaveAppearance();
+            updateSaveAppearance(); // color only depends on 'dirty'; status text handled here
           })
           .fail(()=>{ /* ignore */ });
       }
@@ -188,6 +202,7 @@
           .done((res)=>{
             ensureEditorReady().then(()=>{
               currentFile=relPath;
+              $btnRenameFile.prop("disabled", false); // enable rename when a file is open
               lastDisk = { mtime: res.mtime || null, size: res.size || null };
               onDiskChanged = false;
               markDirty(false); // resets & updates save appearance
@@ -213,6 +228,33 @@
           .fail((xhr)=>{ console.error("[file-browser] save error", xhr.status, xhr.responseText); notifyErr("Save error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
+      // NEW: rename file
+      function doRename(){
+        if (!currentFile) return;
+        const oldPath = currentFile;
+        const base = oldPath.split("/").pop();
+        const newName = prompt("Rename file to:", base);
+        if (newName == null) return; // canceled
+        const trimmed = String(newName).trim();
+        if (!trimmed || trimmed === base) return;
+        if (/[\\/:*?"<>|]/.test(trimmed)) { notifyErr("Invalid filename."); return; }
+
+        ajax("POST","filebrowser/rename",{ path: oldPath, newName: trimmed })
+          .done((res)=>{
+            // Update currentFile path; if extension changed, reapply language mode
+            const content = getEditorContent();
+            currentFile = res.path || (oldPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
+            $btnRenameFile.prop("disabled", false);
+            setEditorContent(content, currentFile); // rebind model to extension
+            if (typeof res.mtime === "number" || typeof res.size === "number") {
+              lastDisk = { mtime: res.mtime || lastDisk.mtime, size: res.size ?? lastDisk.size };
+            }
+            setStatus("Renamed to: " + currentFile);
+            loadList(currentDir);
+          })
+          .fail((xhr)=>{ console.error("[file-browser] rename error", xhr.status, xhr.responseText); notifyErr("Rename error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
+      }
+
       // Left-panel controls
       $btnRefreshL.on("click", ()=> loadList(currentDir));
       $btnChangeBase.on("click", ()=>{
@@ -228,6 +270,7 @@
 
       // Right-panel controls
       $btnSave.on("click", doSave);
+      $btnRenameFile.on("click", doRename);
       $btnNewFile.on("click", ()=>{
         const name = prompt("New file name:"); if (!name) return;
         ajax("POST","filebrowser/new-file",{ dir: currentDir, name })
