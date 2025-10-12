@@ -1,13 +1,13 @@
 {
   "name": "@moryoav/node-red-plugin-file-browser",
-  "version": "0.2.2",
-  "description": "Node-RED editor plugin: Files sidebar with folder tree, text editor, create/save files",
+  "version": "0.2.3",
+  "description": "Node-RED editor plugin: Files sidebar with folder tree, text editor, create/save files; base folder is configurable from the UI and persisted under userDir.",
   "license": "MIT",
   "author": "Yoav (moryoav)",
   "homepage": "https://github.com/moryoav/node-red-plugin-file-browser#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/moryoav/node-red-plugin-file-browser.git"
+    "url": "https://github.com/moryoav/node-red-plugin-file-browser.git"
   },
   "bugs": {
     "url": "https://github.com/moryoav/node-red-plugin-file-browser/issues"
@@ -21,6 +21,7 @@
     "monaco"
   ],
   "node-red": {
+    "version": ">=3.0.0",
     "plugins": {
       "file-browser": "editor/file-browser.html"
     },
@@ -31,11 +32,14 @@
   "files": [
     "editor",
     "runtime",
+    "examples",
     "README.md",
     "LICENSE"
   ],
   "engines": {
     "node": ">=16.0.0"
   },
-  "publishConfig": { "access": "public" }
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -1,0 +1,19 @@
+[
+  {
+    "id": "fb-flow",
+    "type": "tab",
+    "label": "Files Sidebar Demo",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "fb-note",
+    "type": "comment",
+    "z": "fb-flow",
+    "name": "How to use the Files sidebar",
+    "info": "Open the Node-RED editor → click the 'Files' sidebar tab.\n\nLeft panel header:\n• Base: shows current base folder\n• Change base…: set a new base (must be inside userDir, e.g., /data/projects/YourProject)\n• Refresh: re-scan the current folder\n\nRight panel:\n• Click a file in the tree to open it\n• Use New file / New folder to create items in the current directory\n• Save to write edits back to disk\n\nBase folder is persisted to ~/.node-red/.filebrowser.config.json (Docker: /data/.filebrowser.config.json).",
+    "x": 300,
+    "y": 100,
+    "wires": []
+  }
+]
