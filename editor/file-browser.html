@@ -56,7 +56,6 @@
       url,
       data: data ? JSON.stringify(data) : undefined,
       contentType: data ? "application/json" : undefined,
-      // Important for admin API endpoints:
       headers: { "Node-RED-API-Version": "v2" },
       xhrFields: { withCredentials: true }
     });
@@ -102,7 +101,7 @@
       const $leftHdr= $("<div>").css({
         padding:"8px",
         display:"grid",
-        gridTemplateColumns:"auto 1fr auto auto", /* label | input | change | refresh */
+        gridTemplateColumns:"auto 1fr auto auto",
         gap:"6px",
         alignItems:"center",
         borderBottom:"1px solid var(--red-ui-secondary-background)"
@@ -154,6 +153,9 @@
 
       // referenced files: path -> { names:[], ids:[] }
       let referencedMap = new Map();
+
+      // NEW: keep a live cache of editor text to survive UI reflows/hide/show
+      let editorTextCache = "";
 
       function toast(msg,type){ try { RED.notify(msg,{type:type||"success",timeout:1800}); } catch(e){ RED.notify(msg,type||"success"); } }
       function notifyErr(x){ try { RED.notify(x,{type:"error",timeout:2500}); } catch(e){ RED.notify(x,"error"); } }
@@ -269,12 +271,22 @@
         if (editorKind==="textarea" && textarea)   return Promise.resolve("textarea");
         return MonacoReady().then(()=>{
           monacoEditor = window.monaco.editor.create($editorHost[0], { value:"", language:"plaintext", automaticLayout:true, minimap:{enabled:false} });
-          monacoEditor.onDidChangeModelContent(()=>{ if (currentFile){ markDirty(true);} });
+          monacoEditor.onDidChangeModelContent(()=>{
+            if (currentFile){
+              editorTextCache = monacoEditor.getValue(); // keep cache fresh
+              markDirty(true);
+            }
+          });
           editorKind="monaco"; return "monaco";
         }).catch(()=>{
           textarea = $("<textarea>").css({position:"absolute", inset:"0", width:"100%", height:"100%", fontFamily:"monospace", fontSize:"12px", padding:"8px", boxSizing:"border-box"});
           $editorHost.empty().append(textarea);
-          textarea.on("input", ()=>{ if (currentFile){ markDirty(true);} });
+          textarea.on("input", ()=>{
+            if (currentFile){
+              editorTextCache = textarea.val(); // keep cache fresh
+              markDirty(true);
+            }
+          });
           editorKind="textarea"; return "textarea";
         });
       }
@@ -285,16 +297,43 @@
         return map[ext] || "plaintext";
       }
       function setEditorContent(text, filename){
+        editorTextCache = (text != null ? String(text) : "");
         if (editorKind==="monaco" && monacoEditor){
           const lang=langFromFilename(filename||"");
-          const model=window.monaco.editor.createModel(text, lang);
+          const model=window.monaco.editor.createModel(editorTextCache, lang);
           monacoEditor.setModel(model);
-        } else if (editorKind==="textarea" && textarea){ textarea.val(text); }
+          try { monacoEditor.layout(); } catch(e){}
+        } else if (editorKind==="textarea" && textarea){
+          textarea.val(editorTextCache);
+        }
       }
       function getEditorContent(){
         if (editorKind==="monaco" && monacoEditor) return monacoEditor.getValue();
         if (editorKind==="textarea" && textarea)   return textarea.val();
-        return "";
+        return editorTextCache || "";
+      }
+
+      // NEW: rehydrate editor after UI reflows (node editor closes / tab shows)
+      function rehydrateEditor(){
+        if (!currentFile) return;
+        const text = editorTextCache || getEditorContent() || "";
+        ensureEditorReady().then(()=>{
+          // If the host got emptied or Monaco lost its model, reapply content
+          if (editorKind==="monaco" && monacoEditor) {
+            const m = monacoEditor.getModel && monacoEditor.getModel();
+            if (!m || !m.getValue || m.getValue() !== text) {
+              setEditorContent(text, currentFile);
+            } else {
+              try { monacoEditor.layout(); } catch(e){}
+            }
+          } else {
+            // textarea or just ensure content present
+            setEditorContent(text, currentFile);
+          }
+          // restore buttons state
+          $btnRenameFile.prop("disabled", false);
+          $btnDeleteFile.prop("disabled", false);
+        });
       }
 
       // ---------- File ops ----------
@@ -368,6 +407,7 @@
             setStatus("Deleted: " + name);
             toast("Deleted","success");
             currentFile = null;
+            editorTextCache = "";
             $btnRenameFile.prop("disabled", true);
             $btnDeleteFile.prop("disabled", true);
             markDirty(false);
@@ -434,7 +474,16 @@
           .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
-      RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning"); });
+      // Capture content on open; restore on close
+      RED.events.on("editor:open", ()=>{ editorTextCache = getEditorContent(); });
+      RED.events.on("editor:close", ()=>{
+        // Warn about unsaved changes like before
+        if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning");
+        // Rehydrate editor so the file stays visible
+        rehydrateEditor();
+      });
+
+      // Rescan after deploy
       if (RED && RED.events && RED.events.on) {
         RED.events.on("deploy", ()=> { scanFlows(); });
       }
@@ -444,7 +493,14 @@
       RED.sidebar.addTab({
         id:"file-browser", name:"Files", label:"Files", iconClass:"fa fa-files-o",
         content:$root, action:"file-browser:show", enableOnEdit:true, toolbar:null,
-        onshow: function(){ if (!$tree.children().length) loadConfigThenList(); }
+        onshow: function(){
+          if (!$tree.children().length) {
+            loadConfigThenList();
+          } else {
+            // If tab re-shown after dialog, make sure editor is painted
+            rehydrateEditor();
+          }
+        }
       });
 
       // Kickoff
