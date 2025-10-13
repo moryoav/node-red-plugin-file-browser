@@ -1,18 +1,16 @@
 <script type="text/javascript">
 (function() {
-  // --- Utilities -----------------------------------------------------------
+  // ---------- Styles for pulse highlight ----------
   function ensureStyle() {
     if (document.getElementById("fb-style")) return;
     const css = `
       .fb-row { display:flex; align-items:center; padding:4px 2px; cursor:pointer; }
-      .fb-row .fb-tools { display:inline-flex; align-items:center; gap:6px; margin-left:8px; }
-      .fb-icon { opacity:0.8; cursor:pointer; }
-      .fb-icon:hover { opacity:1; }
-      /* Pulse/highlight the node element */
+      .fb-ref-link { opacity:0.9; margin-right:6px; cursor:pointer; }
+      .fb-ref-link:hover { opacity:1; }
       @keyframes fb-node-pulse {
-        0%   { box-shadow: 0 0 0 0 rgba(66, 165, 245, 0.95); }
-        70%  { box-shadow: 0 0 0 10px rgba(66, 165, 245, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(66, 165, 245, 0); }
+        0%   { box-shadow: 0 0 0 0 rgba(66,165,245,0.95); }
+        70%  { box-shadow: 0 0 0 10px rgba(66,165,245,0); }
+        100% { box-shadow: 0 0 0 0 rgba(66,165,245,0); }
       }
       .fb-flash {
         animation: fb-node-pulse 1.8s ease-out 0s 1;
@@ -27,80 +25,72 @@
     document.head.appendChild(s);
   }
 
+  // ---------- Monaco loader (with textarea fallback) ----------
   function loadScript(src){
     return new Promise((res,rej)=>{
       const s=document.createElement("script");
-      s.src=src; s.onload=res;
-      s.onerror=()=>rej(new Error("load fail "+src));
+      s.src=src;s.onload=res;s.onerror=()=>rej(new Error("load fail "+src));
       document.head.appendChild(s);
     });
   }
-
-  // Monaco loader (with textarea fallback)
   const MonacoReady=(function(){let p=null;return function(){
-    if(p) return p;
+    if(p)return p;
     p=new Promise(async(res,rej)=>{
-      if(window.monaco&&window.monaco.editor) return res(window.monaco);
+      if(window.monaco&&window.monaco.editor)return res(window.monaco);
       if(!window.require){
-        try{ await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs/loader.min.js"); }
-        catch(e){ return rej(e); }
+        try{await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs/loader.min.js");}
+        catch(e){return rej(e);}
       }
       try{
         window.require.config({paths:{vs:"https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs"}});
         window.require(["vs/editor/editor.main"],()=>window.monaco&&window.monaco.editor?res(window.monaco):rej(new Error("monaco init failed")));
-      }catch(e){ rej(e); }
+      }catch(e){rej(e);}
     });
     return p;
   };})();
 
-  // Simple ajax (adds Node-RED admin header)
+  // ---------- Admin ajax ----------
   function ajax(method, url, data) {
     return $.ajax({
       method,
       url,
       data: data ? JSON.stringify(data) : undefined,
       contentType: data ? "application/json" : undefined,
-      headers: { "Node-RED-API-Version": "v2" }
+      // Important for admin API endpoints:
+      headers: { "Node-RED-API-Version": "v2" },
+      xhrFields: { withCredentials: true }
     });
   }
 
-  // Safe node element lookup (after tab switch)
+  // ---------- Reveal & pulse helpers ----------
   function nodeElementById(id) {
     return document.querySelector('[data-nodeid="'+id+'"]');
   }
-
-  // Try to reveal + pulse a node
   function revealNodeById(nodeId) {
     const n = RED.nodes.node(nodeId);
     if (!n) { RED.notify("Node not found in current flows","warning"); return; }
 
-    // 1) Switch to correct tab
     if (n.z && RED.workspaces && typeof RED.workspaces.show === "function") {
       RED.workspaces.show(n.z);
     }
-
-    // 2) After render, bring into view (if helper exists) and pulse
     const doFlash = () => {
       try {
         if (RED.view && typeof RED.view.reveal === "function") {
           RED.view.reveal(n.id, true);
         }
-      } catch(e) { /* ignore */ }
-
+      } catch(e){/* ignore */}
       const el = nodeElementById(n.id);
       if (el) {
         el.classList.add("fb-flash");
-        setTimeout(()=> { el.classList.remove("fb-flash"); }, 1800);
-      } else {
-        if (RED.view && typeof RED.view.select === "function") {
-          try { RED.view.select(n); } catch(e){}
-        }
+        setTimeout(()=>{ el.classList.remove("fb-flash"); }, 1800);
+      } else if (RED.view && typeof RED.view.select === "function") {
+        try { RED.view.select(n); } catch(e){}
       }
     };
     window.requestAnimationFrame(()=> setTimeout(doFlash, 50));
   }
 
-  // --- Plugin --------------------------------------------------------------
+  // ---------- Plugin ----------
   RED.plugins.registerPlugin("file-browser", {
     onadd: function() {
       ensureStyle();
@@ -109,15 +99,26 @@
 
       // Left panel (tree + base controls)
       const $left   = $("<div>").css({width:"38%", minWidth:"280px", height:"100%", display:"flex", flexDirection:"column", borderRight:"1px solid var(--red-ui-secondary-background)"});
-      const $leftHdr= $("<div>").css({padding:"8px", display:"grid", gridTemplateColumns:"auto 1fr auto auto", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
+      const $leftHdr= $("<div>").css({
+        padding:"8px",
+        display:"grid",
+        gridTemplateColumns:"auto 1fr auto auto", /* label | input | change | refresh */
+        gap:"6px",
+        alignItems:"center",
+        borderBottom:"1px solid var(--red-ui-secondary-background)"
+      });
       const $baseLabel = $('<span style="font-size:0.8em;opacity:0.8;white-space:nowrap;align-self:center;">Base:</span>');
-      const $baseInput = $('<input type="text" readonly>').css({width:"100%", fontSize:"0.85em", padding:"4px 6px"});
+      const $baseWrap  = $("<div>").css({display:"flex", alignItems:"center", width:"100%"});
+      const $baseInput = $('<input type="text" readonly>').css({
+        width:"100%", height:"28px", lineHeight:"26px", padding:"0 8px", fontSize:"0.85em", boxSizing:"border-box", margin:0
+      });
+      $baseWrap.append($baseInput);
       const $btnChangeBase= $('<button class="red-ui-button" title="Change base…"><i class="fa fa-folder-open"></i></button>');
       const $btnRefreshL  = $('<button class="red-ui-button" title="Refresh"><i class="fa fa-refresh"></i></button>');
       const $treeWrap= $("<div>").css({flex:"1 1 auto", overflow:"auto"});
       const $tree   = $("<div>").attr("id","fb-tree").css({padding:"6px"});
 
-      $leftHdr.append($baseLabel, $baseInput, $btnChangeBase, $btnRefreshL);
+      $leftHdr.append($baseLabel, $baseWrap, $btnChangeBase, $btnRefreshL);
       $treeWrap.append($tree);
       $left.append($leftHdr, $treeWrap);
 
@@ -125,37 +126,40 @@
       const $right  = $("<div>").css({flex:"1 1 auto", height:"100%", display:"flex", flexDirection:"column"});
       const $toolbar= $("<div>").css({padding:"6px", display:"flex", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
       const $crumb  = $("<div>").css({fontSize:"0.85em", opacity:0.8, flex:"1 1 auto", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"});
-      const $btnNewFile = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
-      const $btnNewDir  = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
-      const $btnSave    = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
+
+      const $btnNewFile    = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
+      const $btnRenameFile = $('<button class="red-ui-button"><i class="fa fa-pencil"></i> Rename file</button>').prop("disabled", true);
+      const $btnDeleteFile = $('<button class="red-ui-button"><i class="fa fa-trash"></i> Delete</button>').prop("disabled", true);
+      const $btnNewDir     = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
+      const $btnSave       = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
+
       const $editorHost = $("<div>").attr("id","fb-editor").css({flex:"1 1 auto", position:"relative", minHeight:"220px"});
       const $status     = $("<div>").css({padding:"4px 8px", borderTop:"1px solid var(--red-ui-secondary-background)", fontSize:"0.85em", opacity:0.8});
 
-      $toolbar.append($crumb, $btnNewFile, $btnNewDir, $btnSave);
+      $toolbar.append($crumb, $btnNewFile, $btnRenameFile, $btnDeleteFile, $btnNewDir, $btnSave);
       $right.append($toolbar, $editorHost, $status);
       $root.append($left, $right);
 
-      // --- State -----------------------------------------------------------
+      // ---------- State ----------
       let baseInfo = { baseDir:"", userDir:"" };
       let currentDir = ".";
       let currentFile = null;
       let monacoEditor = null, textarea = null, editorKind = "none";
       let dirty = false;
 
-      // Ref map: relPath -> [{id,name,type}, ...]
-      let refMap = {};
-      let lastList = null;
-
-      // Track on-disk state of current file (mtime/size)
+      // on-disk tracking
       let lastDisk = { mtime: null, size: null };
       let statTimer = null;
       let onDiskChanged = false;
 
-      function setStatus(t){ $status.text(t||""); }
-      function notify(type, text){ RED.notify(text, type || "info"); }
-      function notifyErr(text){ notify("error", text); }
+      // referenced files: path -> { names:[], ids:[] }
+      let referencedMap = new Map();
 
-      // --- Navbar / crumb --------------------------------------------------
+      function toast(msg,type){ try { RED.notify(msg,{type:type||"success",timeout:1800}); } catch(e){ RED.notify(msg,type||"success"); } }
+      function notifyErr(x){ try { RED.notify(x,{type:"error",timeout:2500}); } catch(e){ RED.notify(x,"error"); } }
+      function setStatus(t){ $status.text(t||""); }
+
+      // ---------- Crumbs ----------
       function setCrumb(parts) {
         const segs = [];
         const acc = [];
@@ -168,28 +172,32 @@
         $crumb.empty().append(segs);
       }
 
-      function iconFor(it){
-        return $('<i class="fa"></i>')
-          .addClass(it.type==="dir" ? "fa-folder" : "fa-file-text-o")
-          .css({width:"16px", marginRight:"6px"});
+      // ---------- Icons & rows ----------
+      function iconFor(it, meta){
+        const $ico = $('<i class="fa"></i>').addClass(it.type==="dir"?"fa-folder":"fa-file-text-o").css({width:"16px",marginRight:"6px"});
+        if (it.type==="file" && meta) {
+          const names = meta.names && meta.names.length ? meta.names : [];
+          const tip = names.length
+            ? `Click to reveal: ${names[0]}` + (names.length>1 ? `\nAlso in: ${names.slice(1,6).join(", ")}${names.length>6?` (+${names.length-6} more)`:``}` : ``)
+            : "Referenced in flow(s)";
+          const firstId = (meta.ids && meta.ids[0]) || null;
+          const $mark = $('<i class="fa fa-link fb-ref-link"></i>').attr("title", tip);
+          if (firstId) {
+            $mark.on("click", (e)=>{ e.stopPropagation(); revealNodeById(firstId); });
+          }
+          return [$mark, $ico];
+        }
+        return [$ico];
       }
 
       function rowUp(){
-        const $r=$('<div class="fb-row">');
-        $r.append($('<i class="fa fa-level-up"></i>').css({width:"16px",marginRight:"6px"}), $('<span>').text("..").css({flex:"1 1 auto"}));
+        const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
+        $r.append($('<i class="fa fa-level-up"></i>').css({width:"16px",marginRight:"6px"}), $('<span>').text(".."));
         $r.on('click', ()=>{ const parent = currentDir.split("/").filter(Boolean).slice(0,-1).join("/") || "."; loadList(parent); });
         return $r;
       }
 
-      function makeRefsTooltip(nodes) {
-        if (!nodes || !nodes.length) return "";
-        const names = nodes.map(n=>n.name||n.id).slice(0,6);
-        const more = nodes.length > names.length ? ` (+${nodes.length - names.length} more)` : "";
-        return `Click to reveal: ${names[0]}\nAlso in: ${names.slice(1).join(", ")}${more}`;
-      }
-
       function renderTree(list){
-        lastList = list;
         baseInfo.baseDir = list.baseDir || baseInfo.baseDir;
         baseInfo.userDir = list.userDir || baseInfo.userDir;
         $baseInput.val(baseInfo.baseDir || "");
@@ -200,66 +208,62 @@
 
         const rows=[];
         if (list.cwd!==".") rows.push(rowUp());
-
         list.items.forEach((it)=>{
-          const $r=$('<div class="fb-row">');
+          const meta = (it.type==="file") ? referencedMap.get(it.path) : null;
+          const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
+
+          const icons = iconFor(it, meta);
+          icons.forEach(n=> $r.append(n));
+
           const $name = $('<span>').text(it.name).css({flex:"1 1 auto"});
-          const $tools = $('<span class="fb-tools">');
-
-          // Reference icon for files — now clickable to reveal & pulse
-          if (it.type === "file") {
-            const refs = refMap[it.path] || [];
-            if (refs.length) {
-              const tip = makeRefsTooltip(refs);
-              const first = refs[0];
-              const $link = $('<i class="fa fa-link fb-icon"></i>')
-                              .attr("title", tip || "Reveal reference")
-                              .on("click", (e)=>{ e.stopPropagation(); revealNodeById(first.id); });
-              $tools.append($link);
-            }
+          if (meta && meta.names && meta.names.length) {
+            $r.attr("title", "Referenced by: " + meta.names.join(", "));
           }
+          $r.append($name);
 
-          $r.append(iconFor(it), $name, $tools);
-
-          // Row click behavior
-          $r.on('click', ()=>{ it.type==="dir" ? loadList(it.path) : openFile(it.path); });
+          if (it.type==="dir") $r.on('click', ()=> loadList(it.path));
+          else $r.on('click', ()=> openFile(it.path));
 
           rows.push($r);
         });
-
         rows.forEach(r=>$tree.append(r));
       }
 
-      // --- Refs scan -------------------------------------------------------
-      function scanRefsAndRefresh() {
-        ajax("GET", "filebrowser/scan-flows")
-          .done((res)=>{
-            refMap = {};
-            if (res && Array.isArray(res.referenced)) {
-              res.referenced.forEach(entry=>{
-                if (entry && entry.path) refMap[entry.path] = Array.isArray(entry.nodes) ? entry.nodes : [];
-              });
-            }
-            // Re-render tree to show link icons/tooltips
-            if (lastList) renderTree(lastList);
-          })
-          .fail((xhr)=>{ console.warn("[file-browser] scan-flows error", xhr.status, xhr.responseText); });
-      }
-
-      // --- Loaders ---------------------------------------------------------
+      // ---------- Loaders ----------
       function loadConfigThenList() {
         ajax("GET", "filebrowser/config")
-          .done((cfg)=>{ baseInfo = cfg || baseInfo; $baseInput.val(baseInfo.baseDir||""); loadList("."); })
-          .fail(()=>{ loadList("."); });
+          .done((cfg)=>{ baseInfo = cfg || baseInfo; $baseInput.val(baseInfo.baseDir||""); scanFlows(); loadList("."); })
+          .fail(()=>{ scanFlows(); loadList("."); });
       }
 
       function loadList(dir) {
         ajax("GET", "filebrowser/list?path="+encodeURIComponent(dir))
-          .done((res)=>{ renderTree(res); setStatus("Listed: "+res.cwd); scanRefsAndRefresh(); })
+          .done((res)=>{ renderTree(res); setStatus("Listed: "+res.cwd); })
           .fail((xhr)=>{ console.error("[file-browser] list error", xhr.status, xhr.responseText); notifyErr("List error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
-      // --- Editor ----------------------------------------------------------
+      // ---------- Flows scan (client) ----------
+      function scanFlows() {
+        ajax("GET","filebrowser/scan-flows")
+          .done((res)=>{
+            const map = new Map();
+            if (res && Array.isArray(res.referenced)) {
+              for (const item of res.referenced) {
+                const rel = (item && item.path) ? String(item.path) : null;
+                if (!rel) continue;
+                const nodes = Array.isArray(item.nodes) ? item.nodes : [];
+                const names = nodes.map(n => (n && n.name) ? String(n.name) : "").filter(Boolean);
+                const ids   = nodes.map(n => (n && n.id)   ? String(n.id)   : "").filter(Boolean);
+                map.set(rel, { names, ids });
+              }
+            }
+            referencedMap = map;
+            if ($tree.children().length) loadList(currentDir);
+          })
+          .fail((xhr)=>{ console.warn("[file-browser] scan-flows error", xhr.status, xhr.responseText); /* non-fatal */ });
+      }
+
+      // ---------- Editor ----------
       function ensureEditorReady(){
         if (editorKind==="monaco" && monacoEditor) return Promise.resolve("monaco");
         if (editorKind==="textarea" && textarea)   return Promise.resolve("textarea");
@@ -289,15 +293,18 @@
       }
       function getEditorContent(){
         if (editorKind==="monaco" && monacoEditor) return monacoEditor.getValue();
-        if (editorKind==="textarea" && textarea) return textarea.val();
+        if (editorKind==="textarea" && textarea)   return textarea.val();
         return "";
       }
 
+      // ---------- File ops ----------
       function openFile(relPath) {
         ajax("GET", "filebrowser/open?path="+encodeURIComponent(relPath))
           .done((res)=>{
             ensureEditorReady().then(()=>{
               currentFile=relPath;
+              $btnRenameFile.prop("disabled", false);
+              $btnDeleteFile.prop("disabled", false);
               lastDisk = { mtime: res.mtime || null, size: res.size || null };
               onDiskChanged = false;
               markDirty(false);
@@ -318,29 +325,65 @@
             onDiskChanged = false;
             markDirty(false);
             setStatus("Saved: "+currentFile);
+            toast("Saved","success");
             setTimeout(statCurrent, 500);
           })
           .fail((xhr)=>{ console.error("[file-browser] save error", xhr.status, xhr.responseText); notifyErr("Save error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
-      // Save button appearance
+      function doRename(){
+        if (!currentFile) return;
+        const oldPath = currentFile;
+        const base = oldPath.split("/").pop();
+        const newName = prompt("Rename file to:", base);
+        if (newName == null) return;
+        const trimmed = String(newName).trim();
+        if (!trimmed || trimmed === base) return;
+        if (/[\\/:*?"<>|]/.test(trimmed)) { notifyErr("Invalid filename."); return; }
+
+        ajax("POST","filebrowser/rename",{ path: oldPath, newName: trimmed })
+          .done((res)=>{
+            const content = getEditorContent();
+            currentFile = res.path || (oldPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
+            setEditorContent(content, currentFile); // mode may change with ext
+            if (typeof res.mtime === "number" || typeof res.size === "number") {
+              lastDisk = { mtime: res.mtime || lastDisk.mtime, size: res.size ?? lastDisk.size };
+            }
+            setStatus("Renamed to: " + currentFile);
+            toast("Renamed","success");
+            loadList(currentDir);
+            scanFlows();
+          })
+          .fail((xhr)=>{ console.error("[file-browser] rename error", xhr.status, xhr.responseText); notifyErr("Rename error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
+      }
+
+      function doDelete(){
+        if (!currentFile) return;
+        const name = currentFile.split("/").pop();
+        const ok = confirm(`Delete "${name}" permanently?`);
+        if (!ok) return;
+        ajax("POST","filebrowser/delete",{ path: currentFile })
+          .done(()=>{
+            stopStatTimer();
+            setStatus("Deleted: " + name);
+            toast("Deleted","success");
+            currentFile = null;
+            $btnRenameFile.prop("disabled", true);
+            $btnDeleteFile.prop("disabled", true);
+            markDirty(false);
+            setEditorContent("", "");
+            loadList(currentDir);
+            scanFlows();
+          })
+          .fail((xhr)=>{ console.error("[file-browser] delete error", xhr.status, xhr.responseText); notifyErr("Delete error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
+      }
+
+      // ---------- Save button state ----------
       function updateSaveAppearance() {
         if (dirty) {
-          $btnSave.prop("disabled", false).css({
-            backgroundColor: "#c9302c",
-            color: "#ffffff",
-            borderColor: "#b52b27",
-            fontWeight: "600",
-            textShadow: "0 1px 0 rgba(0,0,0,0.35)"
-          });
+          $btnSave.prop("disabled", false).addClass("red-ui-button-danger");
         } else {
-          $btnSave.prop("disabled", true).css({
-            backgroundColor: "",
-            color: "",
-            borderColor: "",
-            fontWeight: "",
-            textShadow: ""
-          });
+          $btnSave.prop("disabled", true).removeClass("red-ui-button-danger");
         }
         if (onDiskChanged) {
           $status.text(($status.text()||"") + " (changed on disk)");
@@ -363,49 +406,48 @@
           .fail(()=>{ /* ignore */ });
       }
 
-      // Left-panel controls
-      $btnRefreshL.on("click", ()=> loadList(currentDir));
+      // ---------- Controls ----------
+      $btnRefreshL.on("click", ()=> { scanFlows(); loadList(currentDir); });
       $btnChangeBase.on("click", ()=>{
-        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "")
-                        + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
+        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
         const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
                            suggested || baseInfo.baseDir || baseInfo.userDir || "");
         if (!abs) return;
         ajax("POST","filebrowser/set-base",{ path: abs })
-          .done((cfg)=>{ baseInfo.baseDir = cfg.baseDir; $baseInput.val(baseInfo.baseDir); loadList("."); setStatus("Base set to: "+cfg.baseDir); scanRefsAndRefresh(); })
+          .done((cfg)=>{ baseInfo.baseDir = cfg.baseDir; $baseInput.val(baseInfo.baseDir); setStatus("Base set to: "+cfg.baseDir); toast("Base updated","success"); scanFlows(); loadList("."); })
           .fail((xhr)=> notifyErr("Set base error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
-      // Right-panel controls
       $btnSave.on("click", doSave);
+      $btnRenameFile.on("click", doRename);
+      $btnDeleteFile.on("click", doDelete);
       $btnNewFile.on("click", ()=>{
         const name = prompt("New file name:"); if (!name) return;
         ajax("POST","filebrowser/new-file",{ dir: currentDir, name })
-          .done((res)=>{ loadList(currentDir); setStatus("Created file: "+res.path); })
+          .done((res)=>{ setStatus("Created file: "+res.path); toast("File created","success"); loadList(currentDir); scanFlows(); })
           .fail((xhr)=> notifyErr("New file error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
       $btnNewDir.on("click", ()=>{
         const name = prompt("New folder name:"); if (!name) return;
         ajax("POST","filebrowser/new-folder",{ dir: currentDir, name })
-          .done((res)=>{ loadList(currentDir); setStatus("Created folder: "+res.path); })
+          .done((res)=>{ setStatus("Created folder: "+res.path); toast("Folder created","success"); loadList(currentDir); })
           .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
-      // Warn on closing editor with unsaved changes
       RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning"); });
-
-      // Re-scan refs after deploys so marks stay fresh
-      RED.events.on("deploy", ()=> { scanRefsAndRefresh(); });
+      if (RED && RED.events && RED.events.on) {
+        RED.events.on("deploy", ()=> { scanFlows(); });
+      }
 
       // Sidebar tab
       RED.actions.add("file-browser:show", ()=> RED.sidebar.show("file-browser"));
       RED.sidebar.addTab({
         id:"file-browser", name:"Files", label:"Files", iconClass:"fa fa-files-o",
         content:$root, action:"file-browser:show", enableOnEdit:true, toolbar:null,
-        onshow: function(){ if (!$tree.children().length) loadConfigThenList(); else scanRefsAndRefresh(); }
+        onshow: function(){ if (!$tree.children().length) loadConfigThenList(); }
       });
 
-      // initial load
+      // Kickoff
       setTimeout(()=>{ if (!$tree.children().length) loadConfigThenList(); }, 0);
     }
   });
