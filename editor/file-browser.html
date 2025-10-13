@@ -1,47 +1,123 @@
 <script type="text/javascript">
 (function() {
+  // --- Utilities -----------------------------------------------------------
+  function ensureStyle() {
+    if (document.getElementById("fb-style")) return;
+    const css = `
+      .fb-row { display:flex; align-items:center; padding:4px 2px; cursor:pointer; }
+      .fb-row .fb-tools { display:inline-flex; align-items:center; gap:6px; margin-left:8px; }
+      .fb-icon { opacity:0.8; cursor:pointer; }
+      .fb-icon:hover { opacity:1; }
+      /* Pulse/highlight the node element */
+      @keyframes fb-node-pulse {
+        0%   { box-shadow: 0 0 0 0 rgba(66, 165, 245, 0.95); }
+        70%  { box-shadow: 0 0 0 10px rgba(66, 165, 245, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(66, 165, 245, 0); }
+      }
+      .fb-flash {
+        animation: fb-node-pulse 1.8s ease-out 0s 1;
+        outline: 2px solid var(--red-ui-primary-background, #268bd2);
+        outline-offset: 2px;
+        border-radius: 6px;
+      }
+    `;
+    const s = document.createElement("style");
+    s.id = "fb-style";
+    s.textContent = css;
+    document.head.appendChild(s);
+  }
+
+  function loadScript(src){
+    return new Promise((res,rej)=>{
+      const s=document.createElement("script");
+      s.src=src; s.onload=res;
+      s.onerror=()=>rej(new Error("load fail "+src));
+      document.head.appendChild(s);
+    });
+  }
+
   // Monaco loader (with textarea fallback)
-  function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=()=>rej(new Error("load fail "+src));document.head.appendChild(s);});}
-  const MonacoReady=(function(){let p=null;return function(){if(p)return p;p=new Promise(async(res,rej)=>{if(window.monaco&&window.monaco.editor)return res(window.monaco);if(!window.require){try{await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs/loader.min.js");}catch(e){return rej(e);}}try{window.require.config({paths:{vs:"https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs"}});window.require(["vs/editor/editor.main"],()=>window.monaco&&window.monaco.editor?res(window.monaco):rej(new Error("monaco init failed")));}catch(e){rej(e);}});return p;};})();
+  const MonacoReady=(function(){let p=null;return function(){
+    if(p) return p;
+    p=new Promise(async(res,rej)=>{
+      if(window.monaco&&window.monaco.editor) return res(window.monaco);
+      if(!window.require){
+        try{ await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs/loader.min.js"); }
+        catch(e){ return rej(e); }
+      }
+      try{
+        window.require.config({paths:{vs:"https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs"}});
+        window.require(["vs/editor/editor.main"],()=>window.monaco&&window.monaco.editor?res(window.monaco):rej(new Error("monaco init failed")));
+      }catch(e){ rej(e); }
+    });
+    return p;
+  };})();
 
-	function ajax(method, url, data) {
-	  return $.ajax({
-		method,
-		url,
-		data: data ? JSON.stringify(data) : undefined,
-		contentType: data ? "application/json" : undefined,
-		// Important for admin API endpoints:
-		headers: { "Node-RED-API-Version": "v2" },
-		xhrFields: { withCredentials: true }
-	  });
-	}
+  // Simple ajax (adds Node-RED admin header)
+  function ajax(method, url, data) {
+    return $.ajax({
+      method,
+      url,
+      data: data ? JSON.stringify(data) : undefined,
+      contentType: data ? "application/json" : undefined,
+      headers: { "Node-RED-API-Version": "v2" }
+    });
+  }
 
+  // Safe node element lookup (after tab switch)
+  function nodeElementById(id) {
+    return document.querySelector('[data-nodeid="'+id+'"]');
+  }
+
+  // Try to reveal + pulse a node
+  function revealNodeById(nodeId) {
+    const n = RED.nodes.node(nodeId);
+    if (!n) { RED.notify("Node not found in current flows","warning"); return; }
+
+    // 1) Switch to correct tab
+    if (n.z && RED.workspaces && typeof RED.workspaces.show === "function") {
+      RED.workspaces.show(n.z);
+    }
+
+    // 2) After render, bring into view (if helper exists) and pulse
+    const doFlash = () => {
+      try {
+        if (RED.view && typeof RED.view.reveal === "function") {
+          RED.view.reveal(n.id, true);
+        }
+      } catch(e) { /* ignore */ }
+
+      const el = nodeElementById(n.id);
+      if (el) {
+        el.classList.add("fb-flash");
+        setTimeout(()=> { el.classList.remove("fb-flash"); }, 1800);
+      } else {
+        if (RED.view && typeof RED.view.select === "function") {
+          try { RED.view.select(n); } catch(e){}
+        }
+      }
+    };
+    window.requestAnimationFrame(()=> setTimeout(doFlash, 50));
+  }
+
+  // --- Plugin --------------------------------------------------------------
   RED.plugins.registerPlugin("file-browser", {
     onadd: function() {
+      ensureStyle();
+
       const $root   = $("<div>").css({position:"relative", height:"100%", display:"flex", gap:"8px"});
 
       // Left panel (tree + base controls)
       const $left   = $("<div>").css({width:"38%", minWidth:"280px", height:"100%", display:"flex", flexDirection:"column", borderRight:"1px solid var(--red-ui-secondary-background)"});
-      const $leftHdr= $("<div>").css({
-        padding:"8px",
-        display:"grid",
-        gridTemplateColumns:"auto 1fr auto auto", /* label | input | change | refresh */
-        gap:"6px",
-        alignItems:"center",
-        borderBottom:"1px solid var(--red-ui-secondary-background)"
-      });
+      const $leftHdr= $("<div>").css({padding:"8px", display:"grid", gridTemplateColumns:"auto 1fr auto auto", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
       const $baseLabel = $('<span style="font-size:0.8em;opacity:0.8;white-space:nowrap;align-self:center;">Base:</span>');
-      const $baseWrap  = $("<div>").css({display:"flex", alignItems:"center", width:"100%"});
-      const $baseInput = $('<input type="text" readonly>').css({
-        width:"100%", height:"28px", lineHeight:"26px", padding:"0 8px", fontSize:"0.85em", boxSizing:"border-box", margin:0
-      });
-      $baseWrap.append($baseInput);
+      const $baseInput = $('<input type="text" readonly>').css({width:"100%", fontSize:"0.85em", padding:"4px 6px"});
       const $btnChangeBase= $('<button class="red-ui-button" title="Change base…"><i class="fa fa-folder-open"></i></button>');
       const $btnRefreshL  = $('<button class="red-ui-button" title="Refresh"><i class="fa fa-refresh"></i></button>');
       const $treeWrap= $("<div>").css({flex:"1 1 auto", overflow:"auto"});
       const $tree   = $("<div>").attr("id","fb-tree").css({padding:"6px"});
 
-      $leftHdr.append($baseLabel, $baseWrap, $btnChangeBase, $btnRefreshL);
+      $leftHdr.append($baseLabel, $baseInput, $btnChangeBase, $btnRefreshL);
       $treeWrap.append($tree);
       $left.append($leftHdr, $treeWrap);
 
@@ -49,40 +125,37 @@
       const $right  = $("<div>").css({flex:"1 1 auto", height:"100%", display:"flex", flexDirection:"column"});
       const $toolbar= $("<div>").css({padding:"6px", display:"flex", gap:"6px", alignItems:"center", borderBottom:"1px solid var(--red-ui-secondary-background)"});
       const $crumb  = $("<div>").css({fontSize:"0.85em", opacity:0.8, flex:"1 1 auto", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"});
-
-      const $btnNewFile    = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
-      const $btnRenameFile = $('<button class="red-ui-button"><i class="fa fa-pencil"></i> Rename file</button>').prop("disabled", true);
-      const $btnDeleteFile = $('<button class="red-ui-button"><i class="fa fa-trash"></i> Delete</button>').prop("disabled", true);
-      const $btnNewDir     = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
-
+      const $btnNewFile = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
+      const $btnNewDir  = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
       const $btnSave    = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
-
       const $editorHost = $("<div>").attr("id","fb-editor").css({flex:"1 1 auto", position:"relative", minHeight:"220px"});
       const $status     = $("<div>").css({padding:"4px 8px", borderTop:"1px solid var(--red-ui-secondary-background)", fontSize:"0.85em", opacity:0.8});
 
-      $toolbar.append($crumb, $btnNewFile, $btnRenameFile, $btnDeleteFile, $btnNewDir, $btnSave);
+      $toolbar.append($crumb, $btnNewFile, $btnNewDir, $btnSave);
       $right.append($toolbar, $editorHost, $status);
       $root.append($left, $right);
 
-      // State
+      // --- State -----------------------------------------------------------
       let baseInfo = { baseDir:"", userDir:"" };
       let currentDir = ".";
       let currentFile = null;
       let monacoEditor = null, textarea = null, editorKind = "none";
       let dirty = false;
 
-      // track on-disk state
+      // Ref map: relPath -> [{id,name,type}, ...]
+      let refMap = {};
+      let lastList = null;
+
+      // Track on-disk state of current file (mtime/size)
       let lastDisk = { mtime: null, size: null };
       let statTimer = null;
       let onDiskChanged = false;
 
-      // referenced files from flows: Map(relPath -> {names: [..]})
-      let referencedMap = new Map();
-
-      function toast(msg,type){ try { RED.notify(msg,{type:type||"success",timeout:1800}); } catch(e){ RED.notify(msg,type||"success"); } }
-      function notifyErr(x){ try { RED.notify(x,{type:"error",timeout:2500}); } catch(e){ RED.notify(x,"error"); } }
       function setStatus(t){ $status.text(t||""); }
+      function notify(type, text){ RED.notify(text, type || "info"); }
+      function notifyErr(text){ notify("error", text); }
 
+      // --- Navbar / crumb --------------------------------------------------
       function setCrumb(parts) {
         const segs = [];
         const acc = [];
@@ -95,24 +168,28 @@
         $crumb.empty().append(segs);
       }
 
-      function iconFor(it, isRef){
-        const $ico = $('<i class="fa"></i>').addClass(it.type==="dir"?"fa-folder":"fa-file-text-o").css({width:"16px",marginRight:"6px"});
-        if (it.type==="file" && isRef) {
-          // add a small chain-link before the name to mark as referenced
-          const $mark = $('<i class="fa fa-link"></i>').css({marginRight:"6px", opacity:0.85});
-          return [$mark, $ico];
-        }
-        return [$ico];
+      function iconFor(it){
+        return $('<i class="fa"></i>')
+          .addClass(it.type==="dir" ? "fa-folder" : "fa-file-text-o")
+          .css({width:"16px", marginRight:"6px"});
       }
 
       function rowUp(){
-        const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
-        $r.append($('<i class="fa fa-level-up"></i>').css({width:"16px",marginRight:"6px"}), $('<span>').text(".."));
+        const $r=$('<div class="fb-row">');
+        $r.append($('<i class="fa fa-level-up"></i>').css({width:"16px",marginRight:"6px"}), $('<span>').text("..").css({flex:"1 1 auto"}));
         $r.on('click', ()=>{ const parent = currentDir.split("/").filter(Boolean).slice(0,-1).join("/") || "."; loadList(parent); });
         return $r;
       }
 
+      function makeRefsTooltip(nodes) {
+        if (!nodes || !nodes.length) return "";
+        const names = nodes.map(n=>n.name||n.id).slice(0,6);
+        const more = nodes.length > names.length ? ` (+${nodes.length - names.length} more)` : "";
+        return `Click to reveal: ${names[0]}\nAlso in: ${names.slice(1).join(", ")}${more}`;
+      }
+
       function renderTree(list){
+        lastList = list;
         baseInfo.baseDir = list.baseDir || baseInfo.baseDir;
         baseInfo.userDir = list.userDir || baseInfo.userDir;
         $baseInput.val(baseInfo.baseDir || "");
@@ -123,82 +200,66 @@
 
         const rows=[];
         if (list.cwd!==".") rows.push(rowUp());
+
         list.items.forEach((it)=>{
-          const isRef = (it.type==="file") && referencedMap.has(it.path);
-          const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
-          const icons = iconFor(it, isRef);
-          icons.forEach(n=> $r.append(n));
+          const $r=$('<div class="fb-row">');
           const $name = $('<span>').text(it.name).css({flex:"1 1 auto"});
-          if (isRef) {
-            const meta = referencedMap.get(it.path);
-            const names = (meta && meta.names && meta.names.length) ? meta.names.join(", ") : "flow";
-            $r.attr("title", "Referenced by: " + names);
+          const $tools = $('<span class="fb-tools">');
+
+          // Reference icon for files — now clickable to reveal & pulse
+          if (it.type === "file") {
+            const refs = refMap[it.path] || [];
+            if (refs.length) {
+              const tip = makeRefsTooltip(refs);
+              const first = refs[0];
+              const $link = $('<i class="fa fa-link fb-icon"></i>')
+                              .attr("title", tip || "Reveal reference")
+                              .on("click", (e)=>{ e.stopPropagation(); revealNodeById(first.id); });
+              $tools.append($link);
+            }
           }
-          $r.append($name);
-          if (it.type==="dir") $r.on('click', ()=> loadList(it.path));
-          else $r.on('click', ()=> openFile(it.path));
+
+          $r.append(iconFor(it), $name, $tools);
+
+          // Row click behavior
+          $r.on('click', ()=>{ it.type==="dir" ? loadList(it.path) : openFile(it.path); });
+
           rows.push($r);
         });
+
         rows.forEach(r=>$tree.append(r));
       }
 
+      // --- Refs scan -------------------------------------------------------
+      function scanRefsAndRefresh() {
+        ajax("GET", "filebrowser/scan-flows")
+          .done((res)=>{
+            refMap = {};
+            if (res && Array.isArray(res.referenced)) {
+              res.referenced.forEach(entry=>{
+                if (entry && entry.path) refMap[entry.path] = Array.isArray(entry.nodes) ? entry.nodes : [];
+              });
+            }
+            // Re-render tree to show link icons/tooltips
+            if (lastList) renderTree(lastList);
+          })
+          .fail((xhr)=>{ console.warn("[file-browser] scan-flows error", xhr.status, xhr.responseText); });
+      }
+
+      // --- Loaders ---------------------------------------------------------
       function loadConfigThenList() {
         ajax("GET", "filebrowser/config")
-          .done((cfg)=>{ baseInfo = cfg || baseInfo; $baseInput.val(baseInfo.baseDir||""); scanFlows(); loadList("."); })
-          .fail(()=>{ scanFlows(); loadList("."); });
-      }
-
-      // Save button appearance (theme-aware)
-      function updateSaveAppearance() {
-        if (dirty) {
-          $btnSave.prop("disabled", false).addClass("red-ui-button-danger");
-        } else {
-          $btnSave.prop("disabled", true).removeClass("red-ui-button-danger");
-        }
-      }
-      function markDirty(val) { dirty = !!val; updateSaveAppearance(); }
-
-      function stopStatTimer(){ if (statTimer){ clearInterval(statTimer); statTimer=null; } }
-      function startStatTimer(){ stopStatTimer(); if (!currentFile) return; statTimer = setInterval(statCurrent, 5000); }
-      function statCurrent() {
-        if (!currentFile) return;
-        ajax("GET", "filebrowser/stat?path="+encodeURIComponent(currentFile))
-          .done(res=>{
-            const changed = (lastDisk.mtime !== null && (res.mtime !== lastDisk.mtime || res.size !== lastDisk.size));
-            onDiskChanged = !!changed;
-            if (onDiskChanged) setStatus("Opened: "+currentFile+" (changed on disk)");
-            else setStatus("Opened: "+currentFile);
-            updateSaveAppearance();
-          })
-          .fail(()=>{ /* ignore */ });
+          .done((cfg)=>{ baseInfo = cfg || baseInfo; $baseInput.val(baseInfo.baseDir||""); loadList("."); })
+          .fail(()=>{ loadList("."); });
       }
 
       function loadList(dir) {
         ajax("GET", "filebrowser/list?path="+encodeURIComponent(dir))
-          .done((res)=>{ renderTree(res); setStatus("Listed: "+res.cwd); })
+          .done((res)=>{ renderTree(res); setStatus("Listed: "+res.cwd); scanRefsAndRefresh(); })
           .fail((xhr)=>{ console.error("[file-browser] list error", xhr.status, xhr.responseText); notifyErr("List error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
-      // ---- flows scan client ----
-      function scanFlows() {
-        ajax("GET","filebrowser/scan-flows")
-          .done((res)=>{
-            const map = new Map();
-            if (res && Array.isArray(res.referenced)) {
-              for (const item of res.referenced) {
-                const rel = (item && item.path) ? String(item.path) : null;
-                if (!rel) continue;
-                const names = (item.nodes||[]).map(n => (n && n.name) ? String(n.name) : "").filter(Boolean);
-                map.set(rel, { names });
-              }
-            }
-            referencedMap = map;
-            // If a tree is already rendered, re-render current directory to apply marks
-            if ($tree.children().length) loadList(currentDir);
-          })
-          .fail((xhr)=>{ console.warn("[file-browser] scan-flows error", xhr.status, xhr.responseText); /* non-fatal */ });
-      }
-
+      // --- Editor ----------------------------------------------------------
       function ensureEditorReady(){
         if (editorKind==="monaco" && monacoEditor) return Promise.resolve("monaco");
         if (editorKind==="textarea" && textarea)   return Promise.resolve("textarea");
@@ -226,15 +287,17 @@
           monacoEditor.setModel(model);
         } else if (editorKind==="textarea" && textarea){ textarea.val(text); }
       }
-      function getEditorContent(){ if (editorKind==="monaco" && monacoEditor) return monacoEditor.getValue(); if (editorKind==="textarea" && textarea) return textarea.val(); return ""; }
+      function getEditorContent(){
+        if (editorKind==="monaco" && monacoEditor) return monacoEditor.getValue();
+        if (editorKind==="textarea" && textarea) return textarea.val();
+        return "";
+      }
 
       function openFile(relPath) {
         ajax("GET", "filebrowser/open?path="+encodeURIComponent(relPath))
           .done((res)=>{
             ensureEditorReady().then(()=>{
               currentFile=relPath;
-              $btnRenameFile.prop("disabled", false);
-              $btnDeleteFile.prop("disabled", false);
               lastDisk = { mtime: res.mtime || null, size: res.size || null };
               onDiskChanged = false;
               markDirty(false);
@@ -255,103 +318,94 @@
             onDiskChanged = false;
             markDirty(false);
             setStatus("Saved: "+currentFile);
-            toast("Saved","success");
             setTimeout(statCurrent, 500);
           })
           .fail((xhr)=>{ console.error("[file-browser] save error", xhr.status, xhr.responseText); notifyErr("Save error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
-      function doRename(){
-        if (!currentFile) return;
-        const oldPath = currentFile;
-        const base = oldPath.split("/").pop();
-        const newName = prompt("Rename file to:", base);
-        if (newName == null) return;
-        const trimmed = String(newName).trim();
-        if (!trimmed || trimmed === base) return;
-        if (/[\\/:*?"<>|]/.test(trimmed)) { notifyErr("Invalid filename."); return; }
-
-        ajax("POST","filebrowser/rename",{ path: oldPath, newName: trimmed })
-          .done((res)=>{
-            const content = getEditorContent();
-            currentFile = res.path || (oldPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
-            setEditorContent(content, currentFile); // update mode if ext changed
-            if (typeof res.mtime === "number" || typeof res.size === "number") {
-              lastDisk = { mtime: res.mtime || lastDisk.mtime, size: res.size ?? lastDisk.size };
-            }
-            setStatus("Renamed to: " + currentFile);
-            toast("Renamed","success");
-            loadList(currentDir);
-            // rescan refs in case the name changed
-            scanFlows();
-          })
-          .fail((xhr)=>{ console.error("[file-browser] rename error", xhr.status, xhr.responseText); notifyErr("Rename error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
+      // Save button appearance
+      function updateSaveAppearance() {
+        if (dirty) {
+          $btnSave.prop("disabled", false).css({
+            backgroundColor: "#c9302c",
+            color: "#ffffff",
+            borderColor: "#b52b27",
+            fontWeight: "600",
+            textShadow: "0 1px 0 rgba(0,0,0,0.35)"
+          });
+        } else {
+          $btnSave.prop("disabled", true).css({
+            backgroundColor: "",
+            color: "",
+            borderColor: "",
+            fontWeight: "",
+            textShadow: ""
+          });
+        }
+        if (onDiskChanged) {
+          $status.text(($status.text()||"") + " (changed on disk)");
+        }
       }
+      function markDirty(val) { dirty = !!val; updateSaveAppearance(); }
 
-      function doDelete(){
+      function stopStatTimer(){ if (statTimer){ clearInterval(statTimer); statTimer=null; } }
+      function startStatTimer(){ stopStatTimer(); if (!currentFile) return; statTimer = setInterval(statCurrent, 5000); }
+      function statCurrent() {
         if (!currentFile) return;
-        const name = currentFile.split("/").pop();
-        const ok = confirm(`Delete "${name}" permanently?`);
-        if (!ok) return;
-        ajax("POST","filebrowser/delete",{ path: currentFile })
-          .done(()=>{
-            stopStatTimer();
-            setStatus("Deleted: " + name);
-            toast("Deleted","success");
-            currentFile = null;
-            $btnRenameFile.prop("disabled", true);
-            $btnDeleteFile.prop("disabled", true);
-            markDirty(false);
-            setEditorContent("", "");
-            loadList(currentDir);
-            scanFlows();
+        ajax("GET", "filebrowser/stat?path="+encodeURIComponent(currentFile))
+          .done(res=>{
+            const changed = (lastDisk.mtime !== null && (res.mtime !== lastDisk.mtime || res.size !== lastDisk.size));
+            onDiskChanged = !!changed;
+            if (onDiskChanged) setStatus("Opened: "+currentFile+" (changed on disk)");
+            else setStatus("Opened: "+currentFile);
+            updateSaveAppearance();
           })
-          .fail((xhr)=>{ console.error("[file-browser] delete error", xhr.status, xhr.responseText); notifyErr("Delete error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
+          .fail(()=>{ /* ignore */ });
       }
 
       // Left-panel controls
-      $btnRefreshL.on("click", ()=> { scanFlows(); loadList(currentDir); });
+      $btnRefreshL.on("click", ()=> loadList(currentDir));
       $btnChangeBase.on("click", ()=>{
-        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
+        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "")
+                        + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
         const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
                            suggested || baseInfo.baseDir || baseInfo.userDir || "");
         if (!abs) return;
         ajax("POST","filebrowser/set-base",{ path: abs })
-          .done((cfg)=>{ baseInfo.baseDir = cfg.baseDir; $baseInput.val(baseInfo.baseDir); setStatus("Base set to: "+cfg.baseDir); toast("Base updated","success"); scanFlows(); loadList("."); })
+          .done((cfg)=>{ baseInfo.baseDir = cfg.baseDir; $baseInput.val(baseInfo.baseDir); loadList("."); setStatus("Base set to: "+cfg.baseDir); scanRefsAndRefresh(); })
           .fail((xhr)=> notifyErr("Set base error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
       // Right-panel controls
       $btnSave.on("click", doSave);
-      $btnRenameFile.on("click", doRename);
-      $btnDeleteFile.on("click", doDelete);
       $btnNewFile.on("click", ()=>{
         const name = prompt("New file name:"); if (!name) return;
         ajax("POST","filebrowser/new-file",{ dir: currentDir, name })
-          .done((res)=>{ setStatus("Created file: "+res.path); toast("File created","success"); loadList(currentDir); scanFlows(); })
+          .done((res)=>{ loadList(currentDir); setStatus("Created file: "+res.path); })
           .fail((xhr)=> notifyErr("New file error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
       $btnNewDir.on("click", ()=>{
         const name = prompt("New folder name:"); if (!name) return;
         ajax("POST","filebrowser/new-folder",{ dir: currentDir, name })
-          .done((res)=>{ setStatus("Created folder: "+res.path); toast("Folder created","success"); loadList(currentDir); })
+          .done((res)=>{ loadList(currentDir); setStatus("Created folder: "+res.path); })
           .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
+      // Warn on closing editor with unsaved changes
       RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning"); });
 
-      // Rescan after deploy
-      if (RED && RED.events && RED.events.on) {
-        RED.events.on("deploy", ()=> { scanFlows(); });
-      }
+      // Re-scan refs after deploys so marks stay fresh
+      RED.events.on("deploy", ()=> { scanRefsAndRefresh(); });
 
+      // Sidebar tab
       RED.actions.add("file-browser:show", ()=> RED.sidebar.show("file-browser"));
       RED.sidebar.addTab({
         id:"file-browser", name:"Files", label:"Files", iconClass:"fa fa-files-o",
         content:$root, action:"file-browser:show", enableOnEdit:true, toolbar:null,
-        onshow: function(){ if (!$tree.children().length) loadConfigThenList(); }
+        onshow: function(){ if (!$tree.children().length) loadConfigThenList(); else scanRefsAndRefresh(); }
       });
 
+      // initial load
       setTimeout(()=>{ if (!$tree.children().length) loadConfigThenList(); }, 0);
     }
   });
