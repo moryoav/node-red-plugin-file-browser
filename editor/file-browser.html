@@ -4,10 +4,17 @@
   function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=()=>rej(new Error("load fail "+src));document.head.appendChild(s);});}
   const MonacoReady=(function(){let p=null;return function(){if(p)return p;p=new Promise(async(res,rej)=>{if(window.monaco&&window.monaco.editor)return res(window.monaco);if(!window.require){try{await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs/loader.min.js");}catch(e){return rej(e);}}try{window.require.config({paths:{vs:"https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs"}});window.require(["vs/editor/editor.main"],()=>window.monaco&&window.monaco.editor?res(window.monaco):rej(new Error("monaco init failed")));}catch(e){rej(e);}});return p;};})();
 
-  // Simple ajax (relative URLs)
-  function ajax(method, url, data) {
-    return $.ajax({ method, url, data: data ? JSON.stringify(data) : undefined, contentType: data ? "application/json" : undefined });
-  }
+	function ajax(method, url, data) {
+	  return $.ajax({
+		method,
+		url,
+		data: data ? JSON.stringify(data) : undefined,
+		contentType: data ? "application/json" : undefined,
+		// Important for admin API endpoints:
+		headers: { "Node-RED-API-Version": "v2" },
+		xhrFields: { withCredentials: true }
+	  });
+	}
 
   RED.plugins.registerPlugin("file-browser", {
     onadd: function() {
@@ -24,20 +31,11 @@
         borderBottom:"1px solid var(--red-ui-secondary-background)"
       });
       const $baseLabel = $('<span style="font-size:0.8em;opacity:0.8;white-space:nowrap;align-self:center;">Base:</span>');
-
-      // Input wrapped to align with buttons
-      const $baseWrap = $("<div>").css({display:"flex", alignItems:"center", width:"100%"});
+      const $baseWrap  = $("<div>").css({display:"flex", alignItems:"center", width:"100%"});
       const $baseInput = $('<input type="text" readonly>').css({
-        width:"100%",
-        height:"28px",
-        lineHeight:"26px",
-        padding:"0 8px",
-        fontSize:"0.85em",
-        boxSizing:"border-box",
-        margin:0
+        width:"100%", height:"28px", lineHeight:"26px", padding:"0 8px", fontSize:"0.85em", boxSizing:"border-box", margin:0
       });
       $baseWrap.append($baseInput);
-
       const $btnChangeBase= $('<button class="red-ui-button" title="Change base…"><i class="fa fa-folder-open"></i></button>');
       const $btnRefreshL  = $('<button class="red-ui-button" title="Refresh"><i class="fa fa-refresh"></i></button>');
       const $treeWrap= $("<div>").css({flex:"1 1 auto", overflow:"auto"});
@@ -54,15 +52,15 @@
 
       const $btnNewFile    = $('<button class="red-ui-button"><i class="fa fa-file-o"></i> New file</button>');
       const $btnRenameFile = $('<button class="red-ui-button"><i class="fa fa-pencil"></i> Rename file</button>').prop("disabled", true);
+      const $btnDeleteFile = $('<button class="red-ui-button"><i class="fa fa-trash"></i> Delete</button>').prop("disabled", true);
       const $btnNewDir     = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
 
-      // Save: theme-aware danger class when dirty
       const $btnSave    = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
 
       const $editorHost = $("<div>").attr("id","fb-editor").css({flex:"1 1 auto", position:"relative", minHeight:"220px"});
       const $status     = $("<div>").css({padding:"4px 8px", borderTop:"1px solid var(--red-ui-secondary-background)", fontSize:"0.85em", opacity:0.8});
 
-      $toolbar.append($crumb, $btnNewFile, $btnRenameFile, $btnNewDir, $btnSave);
+      $toolbar.append($crumb, $btnNewFile, $btnRenameFile, $btnDeleteFile, $btnNewDir, $btnSave);
       $right.append($toolbar, $editorHost, $status);
       $root.append($left, $right);
 
@@ -73,13 +71,17 @@
       let monacoEditor = null, textarea = null, editorKind = "none";
       let dirty = false;
 
-      // Track on-disk state of current file (mtime/size)
+      // track on-disk state
       let lastDisk = { mtime: null, size: null };
       let statTimer = null;
       let onDiskChanged = false;
 
+      // referenced files from flows: Map(relPath -> {names: [..]})
+      let referencedMap = new Map();
+
+      function toast(msg,type){ try { RED.notify(msg,{type:type||"success",timeout:1800}); } catch(e){ RED.notify(msg,type||"success"); } }
+      function notifyErr(x){ try { RED.notify(x,{type:"error",timeout:2500}); } catch(e){ RED.notify(x,"error"); } }
       function setStatus(t){ $status.text(t||""); }
-      function notifyErr(x){ RED.notify(x,"error"); }
 
       function setCrumb(parts) {
         const segs = [];
@@ -93,7 +95,16 @@
         $crumb.empty().append(segs);
       }
 
-      function iconFor(it){ return $('<i class="fa"></i>').addClass(it.type==="dir"?"fa-folder":"fa-file-text-o").css({width:"16px",marginRight:"6px"}); }
+      function iconFor(it, isRef){
+        const $ico = $('<i class="fa"></i>').addClass(it.type==="dir"?"fa-folder":"fa-file-text-o").css({width:"16px",marginRight:"6px"});
+        if (it.type==="file" && isRef) {
+          // add a small chain-link before the name to mark as referenced
+          const $mark = $('<i class="fa fa-link"></i>').css({marginRight:"6px", opacity:0.85});
+          return [$mark, $ico];
+        }
+        return [$ico];
+      }
+
       function rowUp(){
         const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
         $r.append($('<i class="fa fa-level-up"></i>').css({width:"16px",marginRight:"6px"}), $('<span>').text(".."));
@@ -109,16 +120,23 @@
         currentDir = list.cwd;
         setCrumb(list.breadcrumb);
         $tree.empty();
+
         const rows=[];
         if (list.cwd!==".") rows.push(rowUp());
         list.items.forEach((it)=>{
+          const isRef = (it.type==="file") && referencedMap.has(it.path);
           const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
-          $r.append(iconFor(it), $('<span>').text(it.name).css({flex:"1 1 auto"}));
-          if (it.type==="dir") {
-            $r.on('click', ()=> loadList(it.path));
-          } else {
-            $r.on('click', ()=> openFile(it.path));
+          const icons = iconFor(it, isRef);
+          icons.forEach(n=> $r.append(n));
+          const $name = $('<span>').text(it.name).css({flex:"1 1 auto"});
+          if (isRef) {
+            const meta = referencedMap.get(it.path);
+            const names = (meta && meta.names && meta.names.length) ? meta.names.join(", ") : "flow";
+            $r.attr("title", "Referenced by: " + names);
           }
+          $r.append($name);
+          if (it.type==="dir") $r.on('click', ()=> loadList(it.path));
+          else $r.on('click', ()=> openFile(it.path));
           rows.push($r);
         });
         rows.forEach(r=>$tree.append(r));
@@ -126,8 +144,8 @@
 
       function loadConfigThenList() {
         ajax("GET", "filebrowser/config")
-          .done((cfg)=>{ baseInfo = cfg || baseInfo; $baseInput.val(baseInfo.baseDir||""); loadList("."); })
-          .fail(()=>{ loadList("."); });
+          .done((cfg)=>{ baseInfo = cfg || baseInfo; $baseInput.val(baseInfo.baseDir||""); scanFlows(); loadList("."); })
+          .fail(()=>{ scanFlows(); loadList("."); });
       }
 
       // Save button appearance (theme-aware)
@@ -138,17 +156,10 @@
           $btnSave.prop("disabled", true).removeClass("red-ui-button-danger");
         }
       }
-      function markDirty(val) {
-        dirty = !!val;
-        updateSaveAppearance();
-      }
+      function markDirty(val) { dirty = !!val; updateSaveAppearance(); }
 
       function stopStatTimer(){ if (statTimer){ clearInterval(statTimer); statTimer=null; } }
-      function startStatTimer(){
-        stopStatTimer();
-        if (!currentFile) return;
-        statTimer = setInterval(statCurrent, 5000); // check every 5s
-      }
+      function startStatTimer(){ stopStatTimer(); if (!currentFile) return; statTimer = setInterval(statCurrent, 5000); }
       function statCurrent() {
         if (!currentFile) return;
         ajax("GET", "filebrowser/stat?path="+encodeURIComponent(currentFile))
@@ -157,7 +168,7 @@
             onDiskChanged = !!changed;
             if (onDiskChanged) setStatus("Opened: "+currentFile+" (changed on disk)");
             else setStatus("Opened: "+currentFile);
-            updateSaveAppearance(); // color only depends on 'dirty'; status text handled here
+            updateSaveAppearance();
           })
           .fail(()=>{ /* ignore */ });
       }
@@ -166,6 +177,26 @@
         ajax("GET", "filebrowser/list?path="+encodeURIComponent(dir))
           .done((res)=>{ renderTree(res); setStatus("Listed: "+res.cwd); })
           .fail((xhr)=>{ console.error("[file-browser] list error", xhr.status, xhr.responseText); notifyErr("List error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
+      }
+
+      // ---- flows scan client ----
+      function scanFlows() {
+        ajax("GET","filebrowser/scan-flows")
+          .done((res)=>{
+            const map = new Map();
+            if (res && Array.isArray(res.referenced)) {
+              for (const item of res.referenced) {
+                const rel = (item && item.path) ? String(item.path) : null;
+                if (!rel) continue;
+                const names = (item.nodes||[]).map(n => (n && n.name) ? String(n.name) : "").filter(Boolean);
+                map.set(rel, { names });
+              }
+            }
+            referencedMap = map;
+            // If a tree is already rendered, re-render current directory to apply marks
+            if ($tree.children().length) loadList(currentDir);
+          })
+          .fail((xhr)=>{ console.warn("[file-browser] scan-flows error", xhr.status, xhr.responseText); /* non-fatal */ });
       }
 
       function ensureEditorReady(){
@@ -202,10 +233,11 @@
           .done((res)=>{
             ensureEditorReady().then(()=>{
               currentFile=relPath;
-              $btnRenameFile.prop("disabled", false); // enable rename when a file is open
+              $btnRenameFile.prop("disabled", false);
+              $btnDeleteFile.prop("disabled", false);
               lastDisk = { mtime: res.mtime || null, size: res.size || null };
               onDiskChanged = false;
-              markDirty(false); // resets & updates save appearance
+              markDirty(false);
               setEditorContent(res.text||"", relPath);
               setStatus("Opened: "+relPath);
               startStatTimer();
@@ -223,68 +255,95 @@
             onDiskChanged = false;
             markDirty(false);
             setStatus("Saved: "+currentFile);
-            setTimeout(statCurrent, 500); // align with FS mtime soon after save
+            toast("Saved","success");
+            setTimeout(statCurrent, 500);
           })
           .fail((xhr)=>{ console.error("[file-browser] save error", xhr.status, xhr.responseText); notifyErr("Save error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
-      // NEW: rename file
       function doRename(){
         if (!currentFile) return;
         const oldPath = currentFile;
         const base = oldPath.split("/").pop();
         const newName = prompt("Rename file to:", base);
-        if (newName == null) return; // canceled
+        if (newName == null) return;
         const trimmed = String(newName).trim();
         if (!trimmed || trimmed === base) return;
         if (/[\\/:*?"<>|]/.test(trimmed)) { notifyErr("Invalid filename."); return; }
 
         ajax("POST","filebrowser/rename",{ path: oldPath, newName: trimmed })
           .done((res)=>{
-            // Update currentFile path; if extension changed, reapply language mode
             const content = getEditorContent();
             currentFile = res.path || (oldPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
-            $btnRenameFile.prop("disabled", false);
-            setEditorContent(content, currentFile); // rebind model to extension
+            setEditorContent(content, currentFile); // update mode if ext changed
             if (typeof res.mtime === "number" || typeof res.size === "number") {
               lastDisk = { mtime: res.mtime || lastDisk.mtime, size: res.size ?? lastDisk.size };
             }
             setStatus("Renamed to: " + currentFile);
+            toast("Renamed","success");
             loadList(currentDir);
+            // rescan refs in case the name changed
+            scanFlows();
           })
           .fail((xhr)=>{ console.error("[file-browser] rename error", xhr.status, xhr.responseText); notifyErr("Rename error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
 
+      function doDelete(){
+        if (!currentFile) return;
+        const name = currentFile.split("/").pop();
+        const ok = confirm(`Delete "${name}" permanently?`);
+        if (!ok) return;
+        ajax("POST","filebrowser/delete",{ path: currentFile })
+          .done(()=>{
+            stopStatTimer();
+            setStatus("Deleted: " + name);
+            toast("Deleted","success");
+            currentFile = null;
+            $btnRenameFile.prop("disabled", true);
+            $btnDeleteFile.prop("disabled", true);
+            markDirty(false);
+            setEditorContent("", "");
+            loadList(currentDir);
+            scanFlows();
+          })
+          .fail((xhr)=>{ console.error("[file-browser] delete error", xhr.status, xhr.responseText); notifyErr("Delete error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
+      }
+
       // Left-panel controls
-      $btnRefreshL.on("click", ()=> loadList(currentDir));
+      $btnRefreshL.on("click", ()=> { scanFlows(); loadList(currentDir); });
       $btnChangeBase.on("click", ()=>{
-        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "")
-                        + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
+        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
         const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
                            suggested || baseInfo.baseDir || baseInfo.userDir || "");
         if (!abs) return;
         ajax("POST","filebrowser/set-base",{ path: abs })
-          .done((cfg)=>{ baseInfo.baseDir = cfg.baseDir; $baseInput.val(baseInfo.baseDir); loadList("."); setStatus("Base set to: "+cfg.baseDir); })
+          .done((cfg)=>{ baseInfo.baseDir = cfg.baseDir; $baseInput.val(baseInfo.baseDir); setStatus("Base set to: "+cfg.baseDir); toast("Base updated","success"); scanFlows(); loadList("."); })
           .fail((xhr)=> notifyErr("Set base error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
       // Right-panel controls
       $btnSave.on("click", doSave);
       $btnRenameFile.on("click", doRename);
+      $btnDeleteFile.on("click", doDelete);
       $btnNewFile.on("click", ()=>{
         const name = prompt("New file name:"); if (!name) return;
         ajax("POST","filebrowser/new-file",{ dir: currentDir, name })
-          .done((res)=>{ loadList(currentDir); setStatus("Created file: "+res.path); })
+          .done((res)=>{ setStatus("Created file: "+res.path); toast("File created","success"); loadList(currentDir); scanFlows(); })
           .fail((xhr)=> notifyErr("New file error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
       $btnNewDir.on("click", ()=>{
         const name = prompt("New folder name:"); if (!name) return;
         ajax("POST","filebrowser/new-folder",{ dir: currentDir, name })
-          .done((res)=>{ loadList(currentDir); setStatus("Created folder: "+res.path); })
+          .done((res)=>{ setStatus("Created folder: "+res.path); toast("Folder created","success"); loadList(currentDir); })
           .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
       RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning"); });
+
+      // Rescan after deploy
+      if (RED && RED.events && RED.events.on) {
+        RED.events.on("deploy", ()=> { scanFlows(); });
+      }
 
       RED.actions.add("file-browser:show", ()=> RED.sidebar.show("file-browser"));
       RED.sidebar.addTab({
