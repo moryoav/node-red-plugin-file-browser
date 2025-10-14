@@ -136,7 +136,7 @@
       const $editorHost = $("<div>").attr("id","fb-editor").css({flex:"1 1 auto", position:"relative", minHeight:"220px"});
       const $status     = $("<div>").css({padding:"4px 8px", borderTop:"1px solid var(--red-ui-secondary-background)", fontSize:"0.85em", opacity:0.8});
 
-      $toolbar.append($crumb, $btnNewFile, $btnRenameFile, $btnDeleteFile, $btnNewDir, $btnSave);
+      $toolbar.append($btnNewFile, $btnRenameFile, $btnDeleteFile, $btnNewDir, $btnSave, $crumb);
       $right.append($toolbar, $editorHost, $status);
       $root.append($left, $right);
 
