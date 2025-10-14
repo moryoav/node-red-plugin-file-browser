@@ -38,11 +38,11 @@
     p=new Promise(async(res,rej)=>{
       if(window.monaco&&window.monaco.editor)return res(window.monaco);
       if(!window.require){
-        try{await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs/loader.min.js");}
+        try{await loadScript("https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.53.0/min/vs/loader.min.js");}
         catch(e){return rej(e);}
       }
       try{
-        window.require.config({paths:{vs:"https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.43.0/min/vs"}});
+        window.require.config({paths:{vs:"https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.53.0/min/vs"}});
         window.require(["vs/editor/editor.main"],()=>window.monaco&&window.monaco.editor?res(window.monaco):rej(new Error("monaco init failed")));
       }catch(e){rej(e);}
     });
