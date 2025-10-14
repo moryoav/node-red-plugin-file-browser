@@ -8,7 +8,7 @@ module.exports = function(RED) {
   const settingsDefault = (RED.settings.get("fileBrowser") || {});
   const DEFAULT_MAX = settingsDefault.maxBytes || 5 * 1024 * 1024; // 5MB
 
-  const DEBUG = false; // keep on while iterating; switch to env if you like
+  const DEBUG = false;
 
   // ---------- utils ----------
   async function readJSON(file) {
@@ -181,15 +181,13 @@ module.exports = function(RED) {
   }
   function splitAssignment(tok) {
     const i = tok.indexOf("=");
-    if (i > 0) {
-      return { key: tok.slice(0, i), value: tok.slice(i+1) };
-    }
+    if (i > 0) return { key: tok.slice(0, i), value: tok.slice(i+1) };
     return null;
   }
   function looksLikeFilePath(tok) {
     if (!tok || tok.length < 3) return false;
-    if (tok.includes("://")) return false;           // URLs
-    if (/[{}$`*<>|]/.test(tok)) return false;        // templates/vars/wildcards
+    if (tok.includes("://")) return false;
+    if (/[{}$`*<>|]/.test(tok)) return false;
     const t = tok.replace(/\\/g, "/");
     const last = t.split("/").pop();
     if (!last || !last.includes(".")) return false;
@@ -203,7 +201,6 @@ module.exports = function(RED) {
   }
 
   async function getActiveFlows(req, baseDir) {
-    // 1) Runtime (best)
     if (RED.runtime && RED.runtime.flows && typeof RED.runtime.flows.getFlows === "function") {
       try {
         const res = await RED.runtime.flows.getFlows({ user: req.user, req });
@@ -215,7 +212,6 @@ module.exports = function(RED) {
         RED.log.warn(`[file-browser] runtime.flows.getFlows failed, falling back: ${e.message||e}`);
       }
     }
-    // 2) Project file: <baseDir>/flows.json
     const projectFlows = path.join(baseDir, "flows.json");
     try {
       const pj = await readJSON(projectFlows);
@@ -226,10 +222,7 @@ module.exports = function(RED) {
           return { flows: arr, source: "project", flowFile: projectFlows };
         }
       }
-    } catch (e) {
-      // ignore, try next
-    }
-    // 3) Fallback: settings.flowFile
+    } catch (e) { /* ignore */ }
     let flowFile = RED.settings.flowFile;
     if (flowFile) {
       if (!path.isAbsolute(flowFile)) flowFile = path.resolve(USER_DIR, flowFile);
@@ -252,14 +245,11 @@ module.exports = function(RED) {
     const map = new Map(); // relPath -> { path, nodes:[{id,name,type}] }
 
     const counters = { nodes:0, strings:0, tokens:0, pathlike:0, withinBase:0, existing:0 };
-    const details = [];         // first 50 pathlike tokens
-    const withinBaseArr = [];   // first 50 within-base
-    const notWithinArr = [];    // first 50 outside-base
-    const samplesHit = [];      // first 50 hits
-    const samplesMiss = [];     // first 50 misses
-
-    let logLines = 0;
-    const LOG_LIMIT = 300;
+    const details = [];
+    const withinBaseArr = [];
+    const notWithinArr = [];
+    const samplesHit = [];
+    const samplesMiss = [];
 
     for (const node of flows) {
       if (!node || typeof node !== "object") continue;
@@ -271,7 +261,6 @@ module.exports = function(RED) {
           counters.tokens++;
           tok = sanitizeToken(tok);
 
-          // Handle assignments like key=/path/file.ext
           let candidate = tok;
           const assign = splitAssignment(tok);
           if (assign && assign.value) candidate = assign.value;
@@ -291,15 +280,9 @@ module.exports = function(RED) {
           if (inBase && withinBaseArr.length < 50) withinBaseArr.push(row);
           if (!inBase && notWithinArr.length < 50) notWithinArr.push(row);
 
-          if (DEBUG && logLines < LOG_LIMIT) {
-            RED.log.info(`[file-browser][scan] by="${label}" tok="${tok}" cand="${candidate}" abs="${abs}" rel="${rel}" inBase=${inBase} exists=${exists} isFile=${isFile}`);
-            logLines++;
-          }
-
           if (!inBase) continue;
           counters.withinBase++;
 
-          // Record as referenced (within base)
           let entry = map.get(rel);
           if (!entry) { entry = { path: rel, nodes: [] }; map.set(rel, entry); }
           if (!entry.nodes.find(n => n.id === node.id)) {
@@ -322,17 +305,7 @@ module.exports = function(RED) {
 
     return {
       referenced: Array.from(map.values()),
-      debug: {
-        baseDir,
-        source,
-        flowFile,
-        counters,
-        details,
-        withinBase: withinBaseArr,
-        notWithinBase: notWithinArr,
-        hits: samplesHit,
-        misses: samplesMiss
-      }
+      debug: { baseDir, source, flowFile, counters, details, withinBase: withinBaseArr, notWithinBase: notWithinArr, hits: samplesHit, misses: samplesMiss }
     };
   }
 
@@ -347,18 +320,35 @@ module.exports = function(RED) {
     catch(e){ res.status(400).json({ error: String(e.message||e) }); }
   });
 
-  RED.httpAdmin.post("/filebrowser/set-base", needsWrite, async (req,res)=>{
+  // helper: is child inside parent?
+  function isPathInside(child, parent) {
+    const rel = path.relative(parent, child);
+    // inside if rel === "" (same) OR doesn't start with ".." and not absolute
+    return !rel.startsWith("..") && !path.isAbsolute(rel);
+  }
+
+  // relaxed set-base with force
+  RED.httpAdmin.post("/filebrowser/set-base", needsWrite, async (req, res) => {
     try {
-      const { path: proposed, maxBytes } = req.body || {};
-      if (!proposed) throw new Error("Missing path");
-      const abs = path.resolve(proposed);
-      if (!withinBase(abs, USER_DIR)) throw new Error("Base must be inside userDir");
-      const st = await statSafe(abs);
-      if (!st || !st.isDirectory()) throw new Error("Not a directory");
-      const cfg = await setConfig({ baseDir: abs, maxBytes });
-      res.json({ ok:true, baseDir: cfg.baseDir, userDir: USER_DIR });
-    } catch(e) {
-      res.status(400).json({ error: String(e.message||e) });
+      const wantedRaw = String(req.body?.path || "").trim();
+      if (!wantedRaw) return res.status(400).json({ error: "Missing path" });
+
+      const wanted = path.resolve(wantedRaw);
+      const inside = isPathInside(wanted, USER_DIR);
+
+      if (!inside && !req.body?.force) {
+        return res.status(400).json({
+          error: "Requested base is outside userDir",
+          code: "OUTSIDE_USERDIR",
+          userDir: USER_DIR,
+          requested: wanted
+        });
+      }
+
+      const cfg = await setConfig({ baseDir: wanted });
+      return res.json({ baseDir: cfg.baseDir, userDir: USER_DIR });
+    } catch (e) {
+      res.status(500).json({ error: e.message || String(e) });
     }
   });
 

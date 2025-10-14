@@ -56,6 +56,7 @@
       url,
       data: data ? JSON.stringify(data) : undefined,
       contentType: data ? "application/json" : undefined,
+      // Important for admin API endpoints:
       headers: { "Node-RED-API-Version": "v2" },
       xhrFields: { withCredentials: true }
     });
@@ -101,7 +102,7 @@
       const $leftHdr= $("<div>").css({
         padding:"8px",
         display:"grid",
-        gridTemplateColumns:"auto 1fr auto auto",
+        gridTemplateColumns:"auto 1fr auto auto", /* label | input | change | refresh */
         gap:"6px",
         alignItems:"center",
         borderBottom:"1px solid var(--red-ui-secondary-background)"
@@ -153,9 +154,6 @@
 
       // referenced files: path -> { names:[], ids:[] }
       let referencedMap = new Map();
-
-      // NEW: keep a live cache of editor text to survive UI reflows/hide/show
-      let editorTextCache = "";
 
       function toast(msg,type){ try { RED.notify(msg,{type:type||"success",timeout:1800}); } catch(e){ RED.notify(msg,type||"success"); } }
       function notifyErr(x){ try { RED.notify(x,{type:"error",timeout:2500}); } catch(e){ RED.notify(x,"error"); } }
@@ -271,22 +269,12 @@
         if (editorKind==="textarea" && textarea)   return Promise.resolve("textarea");
         return MonacoReady().then(()=>{
           monacoEditor = window.monaco.editor.create($editorHost[0], { value:"", language:"plaintext", automaticLayout:true, minimap:{enabled:false} });
-          monacoEditor.onDidChangeModelContent(()=>{
-            if (currentFile){
-              editorTextCache = monacoEditor.getValue(); // keep cache fresh
-              markDirty(true);
-            }
-          });
+          monacoEditor.onDidChangeModelContent(()=>{ if (currentFile){ markDirty(true);} });
           editorKind="monaco"; return "monaco";
         }).catch(()=>{
           textarea = $("<textarea>").css({position:"absolute", inset:"0", width:"100%", height:"100%", fontFamily:"monospace", fontSize:"12px", padding:"8px", boxSizing:"border-box"});
           $editorHost.empty().append(textarea);
-          textarea.on("input", ()=>{
-            if (currentFile){
-              editorTextCache = textarea.val(); // keep cache fresh
-              markDirty(true);
-            }
-          });
+          textarea.on("input", ()=>{ if (currentFile){ markDirty(true);} });
           editorKind="textarea"; return "textarea";
         });
       }
@@ -297,43 +285,16 @@
         return map[ext] || "plaintext";
       }
       function setEditorContent(text, filename){
-        editorTextCache = (text != null ? String(text) : "");
         if (editorKind==="monaco" && monacoEditor){
           const lang=langFromFilename(filename||"");
-          const model=window.monaco.editor.createModel(editorTextCache, lang);
+          const model=window.monaco.editor.createModel(text, lang);
           monacoEditor.setModel(model);
-          try { monacoEditor.layout(); } catch(e){}
-        } else if (editorKind==="textarea" && textarea){
-          textarea.val(editorTextCache);
-        }
+        } else if (editorKind==="textarea" && textarea){ textarea.val(text); }
       }
       function getEditorContent(){
         if (editorKind==="monaco" && monacoEditor) return monacoEditor.getValue();
         if (editorKind==="textarea" && textarea)   return textarea.val();
-        return editorTextCache || "";
-      }
-
-      // NEW: rehydrate editor after UI reflows (node editor closes / tab shows)
-      function rehydrateEditor(){
-        if (!currentFile) return;
-        const text = editorTextCache || getEditorContent() || "";
-        ensureEditorReady().then(()=>{
-          // If the host got emptied or Monaco lost its model, reapply content
-          if (editorKind==="monaco" && monacoEditor) {
-            const m = monacoEditor.getModel && monacoEditor.getModel();
-            if (!m || !m.getValue || m.getValue() !== text) {
-              setEditorContent(text, currentFile);
-            } else {
-              try { monacoEditor.layout(); } catch(e){}
-            }
-          } else {
-            // textarea or just ensure content present
-            setEditorContent(text, currentFile);
-          }
-          // restore buttons state
-          $btnRenameFile.prop("disabled", false);
-          $btnDeleteFile.prop("disabled", false);
-        });
+        return "";
       }
 
       // ---------- File ops ----------
@@ -407,7 +368,6 @@
             setStatus("Deleted: " + name);
             toast("Deleted","success");
             currentFile = null;
-            editorTextCache = "";
             $btnRenameFile.prop("disabled", true);
             $btnDeleteFile.prop("disabled", true);
             markDirty(false);
@@ -448,15 +408,42 @@
 
       // ---------- Controls ----------
       $btnRefreshL.on("click", ()=> { scanFlows(); loadList(currentDir); });
-      $btnChangeBase.on("click", ()=>{
-        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
-        const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
-                           suggested || baseInfo.baseDir || baseInfo.userDir || "");
-        if (!abs) return;
-        ajax("POST","filebrowser/set-base",{ path: abs })
-          .done((cfg)=>{ baseInfo.baseDir = cfg.baseDir; $baseInput.val(baseInfo.baseDir); setStatus("Base set to: "+cfg.baseDir); toast("Base updated","success"); scanFlows(); loadList("."); })
-          .fail((xhr)=> notifyErr("Set base error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
-      });
+		$btnChangeBase.on("click", ()=>{
+		  const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
+		  const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
+							 suggested || baseInfo.baseDir || baseInfo.userDir || "");
+		  if (!abs) return;
+
+		  function onOk(cfg){
+			baseInfo.baseDir = cfg.baseDir;
+			$baseInput.val(baseInfo.baseDir);
+			setStatus("Base set to: "+cfg.baseDir);
+			toast("Base updated","success");
+			scanFlows();
+			loadList(".");
+		  }
+
+		  ajax("POST","filebrowser/set-base",{ path: abs })
+			.done(onOk)
+			.fail((xhr)=>{
+			  const j = xhr.responseJSON || {};
+			  if (xhr.status === 400 && j.code === "OUTSIDE_USERDIR") {
+				const yn = confirm(
+				  `Warning: The selected folder is OUTSIDE Node-RED userDir.\n\n` +
+				  `userDir:\n${j.userDir}\n\nRequested:\n${j.requested}\n\n` +
+				  `This grants the Files panel access to that folder.\nProceed anyway?`
+				);
+				if (!yn) { notifyErr("Base not changed."); return; }
+
+				ajax("POST","filebrowser/set-base",{ path: abs, force: true })
+				  .done(onOk)
+				  .fail((xhr2)=> notifyErr("Set base error: "+(xhr2.responseJSON?.error || xhr2.statusText || xhr2.status)));
+			  } else {
+				notifyErr("Set base error: "+(j.error || xhr.statusText || xhr.status));
+			  }
+			});
+		});
+
 
       $btnSave.on("click", doSave);
       $btnRenameFile.on("click", doRename);
@@ -474,16 +461,7 @@
           .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
-      // Capture content on open; restore on close
-      RED.events.on("editor:open", ()=>{ editorTextCache = getEditorContent(); });
-      RED.events.on("editor:close", ()=>{
-        // Warn about unsaved changes like before
-        if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning");
-        // Rehydrate editor so the file stays visible
-        rehydrateEditor();
-      });
-
-      // Rescan after deploy
+      RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning"); });
       if (RED && RED.events && RED.events.on) {
         RED.events.on("deploy", ()=> { scanFlows(); });
       }
@@ -493,14 +471,7 @@
       RED.sidebar.addTab({
         id:"file-browser", name:"Files", label:"Files", iconClass:"fa fa-files-o",
         content:$root, action:"file-browser:show", enableOnEdit:true, toolbar:null,
-        onshow: function(){
-          if (!$tree.children().length) {
-            loadConfigThenList();
-          } else {
-            // If tab re-shown after dialog, make sure editor is painted
-            rehydrateEditor();
-          }
-        }
+        onshow: function(){ if (!$tree.children().length) loadConfigThenList(); }
       });
 
       // Kickoff
