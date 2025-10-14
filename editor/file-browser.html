@@ -18,6 +18,16 @@
         outline-offset: 2px;
         border-radius: 6px;
       }
+	.red-ui-button.fb-danger:not(.disabled){
+	  background-color: #d9534f;   /* Bootstrap-like danger red */
+	  color: #000000 !important;                  /* strong contrast */
+	  border-color: #b52b27;
+	  font-weight: 600;
+	  text-shadow: 0 1px 0 rgba(0,0,0,0.35);
+	}
+	.red-ui-button.fb-danger:not(.disabled):hover{
+	  filter: brightness(0.95);
+	}	  
     `;
     const s = document.createElement("style");
     s.id = "fb-style";
@@ -381,9 +391,9 @@
       // ---------- Save button state ----------
       function updateSaveAppearance() {
         if (dirty) {
-          $btnSave.prop("disabled", false).addClass("red-ui-button-danger");
+          $btnSave.prop("disabled", false).addClass("fb-danger");
         } else {
-          $btnSave.prop("disabled", true).removeClass("red-ui-button-danger");
+          $btnSave.prop("disabled", true).removeClass("fb-danger");
         }
         if (onDiskChanged) {
           $status.text(($status.text()||"") + " (changed on disk)");
