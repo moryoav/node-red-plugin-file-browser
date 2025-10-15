@@ -25,15 +25,73 @@
         font-weight: 600;
         text-shadow: 0 1px 0 rgba(0,0,0,0.35);
       }
-      .red-ui-button.fb-danger:not(.disabled):hover{
-        filter: brightness(0.95);
+      .red-ui-button.fb-danger:not(.disabled):hover{ filter: brightness(0.95); }
+      .fb-debug-panel {
+        position: absolute; right: 8px; bottom: 8px; width: 460px; max-height: 50%;
+        overflow:auto; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 11px; background: rgba(0,0,0,0.78); color:#cfe3ff; border-radius: 8px;
+        padding: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25); z-index: 50; display:none;
       }
+      .fb-debug-panel pre { margin:0; white-space:pre-wrap; word-break:break-word; }
+      .fb-debug-toggle { margin-left: 6px; }
     `;
     const s = document.createElement("style");
     s.id = "fb-style";
     s.textContent = css;
     document.head.appendChild(s);
   }
+
+  // ---- Debug master switch (OFF by default) ----
+  const FB_DEBUG_KEY = "filebrowser.debug";
+  const FB_DEBUG_DEFAULT = false; // set true to ship with debug ON by default
+  function fbDebugEnabled() {
+    return localStorage.getItem(FB_DEBUG_KEY) === "1" || FB_DEBUG_DEFAULT;
+  }
+  // Console helpers to toggle without editing code:
+  window.FB_DEBUG_ON  = () => { localStorage.setItem(FB_DEBUG_KEY, "1"); location.reload(); };
+  window.FB_DEBUG_OFF = () => { localStorage.removeItem(FB_DEBUG_KEY); location.reload(); };
+
+  // ---------- Lightweight debug logger (no-op when master is OFF) ----------
+  const DBG = (() => {
+    const buf = [];
+    let enabled = false;   // panel visibility, separate from master switch
+    let panel = null;
+    function ts(){ return new Date().toISOString().slice(11,19); }
+    function ensurePanel(){
+      if (!fbDebugEnabled()) return null; // don't create panel when master off
+      if (panel) return panel;
+      panel = document.createElement("div");
+      panel.className = "fb-debug-panel";
+      panel.id = "fb-debug-panel";
+      const pre = document.createElement("pre");
+      pre.id = "fb-debug-pre";
+      panel.appendChild(pre);
+      document.body.appendChild(panel);
+      return panel;
+    }
+    function render(){
+      if (!fbDebugEnabled() || !panel) return;
+      const pre = panel.querySelector("#fb-debug-pre");
+      if (pre) pre.textContent = buf.join("\n");
+    }
+    return {
+      log: (...a) => {
+        if (!fbDebugEnabled()) return; // silent when master off
+        const line = `[${ts()}] ${a.map(x=> (typeof x==='object'?JSON.stringify(x):String(x))).join(" ")}`;
+        buf.push(line); if (buf.length>600) buf.shift();
+        console.log("[file-browser]", ...a);
+        render();
+      },
+      toggle: () => { // toggles panel visibility (only when master on)
+        if (!fbDebugEnabled()) return false;
+        enabled = !enabled;
+        const p = ensurePanel();
+        if (p) p.style.display = enabled ? "block" : "none";
+        return enabled;
+      },
+      ensurePanel
+    };
+  })();
 
   // ---------- Monaco loader (with textarea fallback) ----------
   function loadScript(src){
@@ -72,22 +130,13 @@
   }
 
   // ---------- Reveal & pulse helpers ----------
-  function nodeElementById(id) {
-    return document.querySelector('[data-nodeid="'+id+'"]');
-  }
+  function nodeElementById(id) { return document.querySelector('[data-nodeid="'+id+'"]'); }
   function revealNodeById(nodeId) {
     const n = RED.nodes.node(nodeId);
     if (!n) { RED.notify("Node not found in current flows","warning"); return; }
-
-    if (n.z && RED.workspaces && typeof RED.workspaces.show === "function") {
-      RED.workspaces.show(n.z);
-    }
+    if (n.z && RED.workspaces && typeof RED.workspaces.show === "function") { RED.workspaces.show(n.z); }
     const doFlash = () => {
-      try {
-        if (RED.view && typeof RED.view.reveal === "function") {
-          RED.view.reveal(n.id, true);
-        }
-      } catch(e){/* ignore */}
+      try { if (RED.view && typeof RED.view.reveal === "function") { RED.view.reveal(n.id, true); } } catch(e){}
       const el = nodeElementById(n.id);
       if (el) {
         el.classList.add("fb-flash");
@@ -141,11 +190,16 @@
       const $btnDeleteFile = $('<button class="red-ui-button"><i class="fa fa-trash"></i> Delete</button>').prop("disabled", true);
       const $btnNewDir     = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
       const $btnSave       = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
+      const $btnDebug      = $('<button class="red-ui-button fb-debug-toggle" title="Toggle debug"><i class="fa fa-bug"></i></button>')
+        .on("click", ()=>{ const on = DBG.toggle(); RED.notify(on?"Debug ON":"Debug OFF","compact"); });
 
       const $editorHost = $("<div>").attr("id","fb-editor").css({flex:"1 1 auto", position:"relative", minHeight:"220px"});
       const $status     = $("<div>").css({padding:"4px 8px", borderTop:"1px solid var(--red-ui-secondary-background)", fontSize:"0.85em", opacity:0.8});
 
+      // Keep original order; add bug button only if debug master is ON
       $toolbar.append($btnNewFile, $btnRenameFile, $btnDeleteFile, $btnNewDir, $btnSave, $crumb);
+      if (fbDebugEnabled()) $toolbar.append($btnDebug);
+
       $right.append($toolbar, $editorHost, $status);
       $root.append($left, $right);
 
@@ -160,7 +214,7 @@
       let editorModel = null;
       let editorModelUri = null;
       let currentTextCache = "";
-      let suppressDirty = false;           /* <-- NEW: guard programmatic changes */
+      let suppressDirty = false;
 
       // on-disk tracking
       let lastDisk = { mtime: null, size: null };
@@ -199,6 +253,129 @@
         }
       }
 
+      // ---------- VIEW STATE MEMORY (v3) ----------
+      const VS_KEY_PREFIX = "fb-vs-v3::";     // per-file key (relative path only)
+      let restoreInProgress = false;
+      let restoreGuardUntil = 0;              // timestamp (ms) until we ignore scroll/cursor events
+      let posDebounceTimer = null;
+
+      function keyFor(rel){ return VS_KEY_PREFIX + (rel||""); }
+      function lsSet(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){ DBG.log("lsSet error",e.message); } }
+      function lsGet(k){ try{ const s=localStorage.getItem(k); return s?JSON.parse(s):null; }catch(e){ DBG.log("lsGet error",e.message); return null; } }
+      function lsDel(k){ try{ localStorage.removeItem(k); }catch(e){ DBG.log("lsDel error",e.message); } }
+
+      function now(){ return Date.now(); }
+      function startRestoreGuard(durationMs){
+        restoreInProgress = true;
+        restoreGuardUntil = now() + (durationMs||800);
+        DBG.log("restore-guard-start", {until: restoreGuardUntil});
+        setTimeout(()=>{ restoreInProgress = false; DBG.log("restore-guard-end"); }, durationMs||800);
+      }
+      function shouldIgnoreChanges(src){
+        const ignore = restoreInProgress || now() < restoreGuardUntil;
+        if (ignore) DBG.log("ignore-event", src, {restoreInProgress, now: now(), guardUntil: restoreGuardUntil});
+        return ignore;
+      }
+      function sanitizeMonacoScroll(v){
+        if (typeof v !== "number") return null;
+        if (v < 0) return null; // invalid
+        return v;
+      }
+
+      function saveViewState(tag){
+        if (!currentFile) return;
+        if (editorKind==="monaco" && monacoEditor){
+          try {
+            const vs = monacoEditor.saveViewState();
+            const st = {
+              kind: "monaco-vs",
+              viewState: vs || null,
+              scrollTop: sanitizeMonacoScroll(monacoEditor.getScrollTop()),
+              scrollLeft: sanitizeMonacoScroll(monacoEditor.getScrollLeft())
+            };
+            if (st.scrollTop === null) { DBG.log("remember-skip-invalid", tag||"", currentFile, st); return; }
+            if (shouldIgnoreChanges("remember-"+(tag||""))) return; // ignore during guard
+            lsSet(keyFor(currentFile), st);
+            DBG.log("remember", tag||"", currentFile, st);
+          } catch(e){ DBG.log("remember error", e.message); }
+        } else if (editorKind==="textarea" && textarea){
+          const el = textarea[0]; if (!el) return;
+          const st = {
+            kind: "textarea-v2",
+            selectionStart: (typeof el.selectionStart === "number") ? el.selectionStart : null,
+            selectionEnd:   (typeof el.selectionEnd   === "number") ? el.selectionEnd   : null,
+            scrollTop: el.scrollTop || 0,
+            scrollLeft: el.scrollLeft || 0
+          };
+          if (shouldIgnoreChanges("remember-textarea-"+(tag||""))) return;
+          lsSet(keyFor(currentFile), st);
+          DBG.log("remember-textarea", tag||"", currentFile, st);
+        }
+      }
+      function scheduleRemember(tag){
+        if (posDebounceTimer) clearTimeout(posDebounceTimer);
+        posDebounceTimer = setTimeout(()=>saveViewState(tag), 160);
+      }
+
+      function applyRestore(relPath, st){
+        if (!st) return false;
+        try{
+          if (editorKind==="monaco" && monacoEditor){
+            if (st.viewState) {
+              monacoEditor.restoreViewState(st.viewState);
+              monacoEditor.focus();
+              DBG.log("restore-applied-vs", relPath, {hasViewState:true});
+            } else {
+              const model = monacoEditor.getModel && monacoEditor.getModel();
+              const maxLine = model ? Math.max(1, model.getLineCount()) : 1;
+              const line = Math.max(1, Math.min(st.line||1, maxLine));
+              const col  = Math.max(1, st.column||1);
+              monacoEditor.setPosition({ lineNumber: line, column: col });
+              if (typeof st.scrollTop  === "number" && st.scrollTop  >= 0) monacoEditor.setScrollTop(st.scrollTop);
+              if (typeof st.scrollLeft === "number" && st.scrollLeft >= 0) monacoEditor.setScrollLeft(st.scrollLeft);
+              monacoEditor.revealPositionInCenterIfOutsideViewport({ lineNumber: line, column: col });
+              DBG.log("restore-applied-legacy", relPath, {line, col, scrollTop:st.scrollTop, scrollLeft:st.scrollLeft});
+            }
+            return true;
+          } else if (editorKind==="textarea" && textarea){
+            const el = textarea[0]; if (!el) return false;
+            if (typeof st.selectionStart === "number" && typeof st.selectionEnd === "number") {
+              el.selectionStart = st.selectionStart;
+              el.selectionEnd   = st.selectionEnd;
+            }
+            if (typeof st.scrollTop  === "number" && st.scrollTop  >= 0) el.scrollTop  = st.scrollTop;
+            if (typeof st.scrollLeft === "number" && st.scrollLeft >= 0) el.scrollLeft = st.scrollLeft;
+            DBG.log("restore-applied-textarea", relPath, st);
+            return true;
+          }
+        }catch(e){ DBG.log("restore error", e.message); }
+        return false;
+      }
+      function restorePositionFor(relPath, opts){
+        relPath = relPath || currentFile;
+        if (!relPath) return;
+        const st = lsGet(keyFor(relPath));
+        DBG.log("restore-start", relPath, st);
+        const retries = (opts&&opts.retries)||14;
+        const delay   = (opts&&opts.delay)||60;
+        let attempt = 0;
+
+        startRestoreGuard((opts&&opts.guardMs) || 800);
+
+        function tryApply(){
+          attempt++;
+          const ok = applyRestore(relPath, st);
+          if (!ok && attempt < retries){
+            setTimeout(tryApply, delay);
+            DBG.log("restore-retry", relPath, {attempt, retries});
+          } else {
+            DBG.log("restore-done", relPath, {ok, attempt});
+          }
+        }
+        setTimeout(tryApply, 0);
+      }
+      window.addEventListener("beforeunload", ()=>saveViewState("beforeunload"));
+
       // ---------- Crumbs ----------
       function setCrumb(parts) {
         const segs = [];
@@ -229,7 +406,6 @@
         }
         return [$ico];
       }
-
       function rowUp(){
         const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
         $r.append($('<i class="fa fa-level-up"></i>').css({width:"16px",marginRight:"6px"}), $('<span>').text(".."));
@@ -315,7 +491,7 @@
           monacoEditor.setModel(editorModel);
 
           monacoEditor.onDidChangeModelContent(()=>{
-            if (suppressDirty) {                    /* <-- NEW: ignore programmatic sets */
+            if (suppressDirty) {
               try { currentTextCache = monacoEditor.getValue(); } catch(e){}
               return;
             }
@@ -323,13 +499,28 @@
             try { currentTextCache = monacoEditor.getValue(); } catch(e){}
           });
 
+          // View-state listeners (guarded)
+          if (typeof monacoEditor.onDidScrollChange === "function") {
+            monacoEditor.onDidScrollChange(()=>{ if (!shouldIgnoreChanges("scroll")) scheduleRemember("scroll"); });
+          }
+          if (typeof monacoEditor.onDidChangeCursorPosition === "function") {
+            monacoEditor.onDidChangeCursorPosition(()=>{ if (!shouldIgnoreChanges("cursor")) scheduleRemember("cursor"); });
+          }
+
           layoutEditorSoon();
-          editorKind="monaco"; return "monaco";
+          editorKind="monaco";
+
+          if (currentFile) { restorePositionFor(currentFile); }
+          return "monaco";
         }).catch(()=>{
           textarea = $("<textarea>").css({position:"absolute", inset:"0", width:"100%", height:"100%", fontFamily:"monospace", fontSize:"12px", padding:"8px", boxSizing:"border-box"});
           $editorHost.empty().append(textarea);
-          textarea.on("input", ()=>{ if (currentFile){ markDirty(true);} });
-          editorKind="textarea"; return "textarea";
+          textarea.on("input", ()=>{ if (currentFile){ markDirty(true);} if (!shouldIgnoreChanges("ta-input")) scheduleRemember("input"); });
+          textarea.on("scroll", ()=>{ if (!shouldIgnoreChanges("ta-scroll")) scheduleRemember("scroll"); });
+          textarea.on("keyup", ()=>{ if (!shouldIgnoreChanges("ta-keyup")) scheduleRemember("keyup"); });
+          editorKind="textarea";
+          if (currentFile) { restorePositionFor(currentFile); }
+          return "textarea";
         });
       }
       function langFromFilename(name){
@@ -342,12 +533,15 @@
         if (editorKind==="monaco" && monacoEditor){
           ensureMonacoModel(filename);
           const v = String(text||"");
-          suppressDirty = true;                    /* <-- NEW: guard change */
+          suppressDirty = true;
           try { editorModel.setValue(v); } finally { suppressDirty = false; }
           currentTextCache = v;
           layoutEditorSoon();
+          // Restore for the file currently open (with guard + retries)
+          restorePositionFor(currentFile || filename, {retries:16, delay:60, guardMs:900});
         } else if (editorKind==="textarea" && textarea){
           textarea.val(text);
+          restorePositionFor(currentFile || filename, {retries:12, delay:60, guardMs:700});
         }
       }
       function getEditorContent(){
@@ -358,6 +552,9 @@
 
       // ---------- File ops ----------
       function openFile(relPath) {
+        // Remember the previous file's position before switching
+        saveViewState("switch-away");
+
         ajax("GET", "filebrowser/open?path="+encodeURIComponent(relPath))
           .done((res)=>{
             ensureEditorReady().then(()=>{
@@ -367,8 +564,8 @@
               lastDisk = { mtime: res.mtime || null, size: res.size || null };
               onDiskChanged = false;
 
-              setEditorContent(res.text||"", relPath);  /* programmatic load */
-              markDirty(false);                          /* <-- reset AFTER content set */
+              setEditorContent(res.text||"", relPath);
+              markDirty(false);
 
               setStatus("Opened: "+relPath);
               startStatTimer();
@@ -389,6 +586,7 @@
             setStatus("Saved: "+currentFile);
             toast("Saved","success");
             setTimeout(statCurrent, 500);
+            saveViewState("after-save");
           })
           .fail((xhr)=>{ console.error("[file-browser] save error", xhr.status, xhr.responseText); notifyErr("Save error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
       }
@@ -406,13 +604,17 @@
         ajax("POST","filebrowser/rename",{ path: oldPath, newName: trimmed })
           .done((res)=>{
             const content = getEditorContent();
+            const oldKey = keyFor(oldPath);
+            const oldState = lsGet(oldKey);
+
             currentFile = res.path || (oldPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
-            setEditorContent(content, currentFile);  /* same text, new mode maybe */
-            markDirty(false);                         /* <-- do NOT flag dirty on rename */
+            setEditorContent(content, currentFile);
+            markDirty(false);
 
             if (typeof res.mtime === "number" || typeof res.size === "number") {
               lastDisk = { mtime: res.mtime || lastDisk.mtime, size: res.size ?? lastDisk.size };
             }
+            if (oldState) { lsSet(keyFor(currentFile), oldState); lsDel(oldKey); DBG.log("migrate-viewstate", {from:oldPath,to:currentFile}); }
             setStatus("Renamed to: " + currentFile);
             toast("Renamed","success");
             loadList(currentDir);
@@ -428,6 +630,7 @@
         if (!ok) return;
         ajax("POST","filebrowser/delete",{ path: currentFile })
           .done(()=>{
+            lsDel(keyFor(currentFile));
             stopStatTimer();
             setStatus("Deleted: " + name);
             toast("Deleted","success");
@@ -444,14 +647,9 @@
 
       // ---------- Save button state ----------
       function updateSaveAppearance() {
-        if (dirty) {
-          $btnSave.prop("disabled", false).addClass("fb-danger");
-        } else {
-          $btnSave.prop("disabled", true).removeClass("fb-danger");
-        }
-        if (onDiskChanged) {
-          $status.text(($status.text()||"") + " (changed on disk)");
-        }
+        if (dirty) { $btnSave.prop("disabled", false).addClass("fb-danger"); }
+        else { $btnSave.prop("disabled", true).removeClass("fb-danger"); }
+        if (onDiskChanged) { $status.text(($status.text()||"") + " (changed on disk)"); }
       }
       function markDirty(val) { dirty = !!val; updateSaveAppearance(); }
 
@@ -471,7 +669,7 @@
       }
 
       // ---------- Controls ----------
-      $btnRefreshL.on("click", ()=> { scanFlows(); loadList(currentDir); });
+      $btnRefreshL.on("click", ()=> { saveViewState("refresh-left"); scanFlows(); loadList(currentDir); });
       $btnChangeBase.on("click", ()=>{
         const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
         const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
@@ -527,6 +725,7 @@
       // Warn + revive model when node editor closes
       RED.events.on("editor:close", ()=>{
         if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning");
+        saveViewState("editor-close");
         setTimeout(()=>{
           if (editorKind==="monaco" && window.monaco) {
             if (!editorModel || editorModel.isDisposed()) {
@@ -536,6 +735,9 @@
               monacoEditor.setModel(editorModel);
             }
             layoutEditorSoon();
+            restorePositionFor(currentFile, {retries:16, delay:60, guardMs:900});
+          } else if (editorKind==="textarea") {
+            restorePositionFor(currentFile, {retries:12, delay:60, guardMs:700});
           }
         }, 0);
       });
@@ -544,12 +746,12 @@
       if (RED && RED.events && RED.events.on) {
         RED.events.on("deploy", ()=> { scanFlows(); });
       }
-      RED.events.on("deploy", () => { setTimeout(layoutEditorSoon, 25); });
-      RED.events.on("editor:open", layoutEditorSoon);
+      RED.events.on("deploy", () => { setTimeout(()=>{ layoutEditorSoon(); restorePositionFor(currentFile, {guardMs:700}); }, 25); });
+      RED.events.on("editor:open", () => { layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:700}), 0); });
       RED.events.on("editor:close", () => { setTimeout(layoutEditorSoon, 0); });
-      RED.events.on && RED.events.on("workspace:resize", layoutEditorSoon);
-      RED.events.on && RED.events.on("sidebar:resize", layoutEditorSoon);
-      window.addEventListener("resize", layoutEditorSoon);
+      RED.events.on && RED.events.on("workspace:resize", ()=>{ layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
+      RED.events.on && RED.events.on("sidebar:resize",   ()=>{ layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
+      window.addEventListener("resize", ()=>{ layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
 
       // Sidebar tab
       RED.actions.add("file-browser:show", ()=> RED.sidebar.show("file-browser"));
@@ -559,6 +761,8 @@
         onshow: function(){
           if (!$tree.children().length) loadConfigThenList();
           layoutEditorSoon();
+          if (currentFile) restorePositionFor(currentFile, {guardMs:700});
+          if (fbDebugEnabled()) DBG.ensurePanel();   // create panel only when master debug is ON
         }
       });
 
