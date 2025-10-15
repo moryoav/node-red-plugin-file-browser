@@ -18,16 +18,16 @@
         outline-offset: 2px;
         border-radius: 6px;
       }
-	.red-ui-button.fb-danger:not(.disabled){
-	  background-color: #d9534f;   /* Bootstrap-like danger red */
-	  color: #000000 !important;                  /* strong contrast */
-	  border-color: #b52b27;
-	  font-weight: 600;
-	  text-shadow: 0 1px 0 rgba(0,0,0,0.35);
-	}
-	.red-ui-button.fb-danger:not(.disabled):hover{
-	  filter: brightness(0.95);
-	}	  
+      .red-ui-button.fb-danger:not(.disabled){
+        background-color: #d9534f;
+        color: #000000 !important;
+        border-color: #b52b27;
+        font-weight: 600;
+        text-shadow: 0 1px 0 rgba(0,0,0,0.35);
+      }
+      .red-ui-button.fb-danger:not(.disabled):hover{
+        filter: brightness(0.95);
+      }
     `;
     const s = document.createElement("style");
     s.id = "fb-style";
@@ -66,7 +66,6 @@
       url,
       data: data ? JSON.stringify(data) : undefined,
       contentType: data ? "application/json" : undefined,
-      // Important for admin API endpoints:
       headers: { "Node-RED-API-Version": "v2" },
       xhrFields: { withCredentials: true }
     });
@@ -157,6 +156,12 @@
       let monacoEditor = null, textarea = null, editorKind = "none";
       let dirty = false;
 
+      // Monaco persistent model state
+      let editorModel = null;
+      let editorModelUri = null;
+      let currentTextCache = "";
+      let suppressDirty = false;           /* <-- NEW: guard programmatic changes */
+
       // on-disk tracking
       let lastDisk = { mtime: null, size: null };
       let statTimer = null;
@@ -168,6 +173,31 @@
       function toast(msg,type){ try { RED.notify(msg,{type:type||"success",timeout:1800}); } catch(e){ RED.notify(msg,type||"success"); } }
       function notifyErr(x){ try { RED.notify(x,{type:"error",timeout:2500}); } catch(e){ RED.notify(x,"error"); } }
       function setStatus(t){ $status.text(t||""); }
+
+      function layoutEditorSoon() {
+        if (editorKind === "monaco" && monacoEditor) {
+          requestAnimationFrame(() => {
+            try { monacoEditor.layout(); } catch(e){}
+          });
+        }
+      }
+
+      function ensureMonacoModel(filename){
+        if (editorKind !== "monaco" || !monacoEditor || !window.monaco) return;
+        if (!editorModelUri) {
+          editorModelUri = window.monaco.Uri.parse("inmemory://file-browser/current");
+        }
+        const lang = langFromFilename(filename||"");
+        if (!editorModel || editorModel.isDisposed()) {
+          editorModel = window.monaco.editor.createModel(currentTextCache || "", lang, editorModelUri);
+          monacoEditor.setModel(editorModel);
+        } else {
+          window.monaco.editor.setModelLanguage(editorModel, lang);
+          if (monacoEditor.getModel() !== editorModel) {
+            monacoEditor.setModel(editorModel);
+          }
+        }
+      }
 
       // ---------- Crumbs ----------
       function setCrumb(parts) {
@@ -279,7 +309,21 @@
         if (editorKind==="textarea" && textarea)   return Promise.resolve("textarea");
         return MonacoReady().then(()=>{
           monacoEditor = window.monaco.editor.create($editorHost[0], { value:"", language:"plaintext", automaticLayout:true, minimap:{enabled:false} });
-          monacoEditor.onDidChangeModelContent(()=>{ if (currentFile){ markDirty(true);} });
+
+          editorModelUri = window.monaco.Uri.parse("inmemory://file-browser/current");
+          editorModel = window.monaco.editor.createModel("", "plaintext", editorModelUri);
+          monacoEditor.setModel(editorModel);
+
+          monacoEditor.onDidChangeModelContent(()=>{
+            if (suppressDirty) {                    /* <-- NEW: ignore programmatic sets */
+              try { currentTextCache = monacoEditor.getValue(); } catch(e){}
+              return;
+            }
+            if (currentFile){ markDirty(true); }
+            try { currentTextCache = monacoEditor.getValue(); } catch(e){}
+          });
+
+          layoutEditorSoon();
           editorKind="monaco"; return "monaco";
         }).catch(()=>{
           textarea = $("<textarea>").css({position:"absolute", inset:"0", width:"100%", height:"100%", fontFamily:"monospace", fontSize:"12px", padding:"8px", boxSizing:"border-box"});
@@ -296,10 +340,15 @@
       }
       function setEditorContent(text, filename){
         if (editorKind==="monaco" && monacoEditor){
-          const lang=langFromFilename(filename||"");
-          const model=window.monaco.editor.createModel(text, lang);
-          monacoEditor.setModel(model);
-        } else if (editorKind==="textarea" && textarea){ textarea.val(text); }
+          ensureMonacoModel(filename);
+          const v = String(text||"");
+          suppressDirty = true;                    /* <-- NEW: guard change */
+          try { editorModel.setValue(v); } finally { suppressDirty = false; }
+          currentTextCache = v;
+          layoutEditorSoon();
+        } else if (editorKind==="textarea" && textarea){
+          textarea.val(text);
+        }
       }
       function getEditorContent(){
         if (editorKind==="monaco" && monacoEditor) return monacoEditor.getValue();
@@ -317,10 +366,13 @@
               $btnDeleteFile.prop("disabled", false);
               lastDisk = { mtime: res.mtime || null, size: res.size || null };
               onDiskChanged = false;
-              markDirty(false);
-              setEditorContent(res.text||"", relPath);
+
+              setEditorContent(res.text||"", relPath);  /* programmatic load */
+              markDirty(false);                          /* <-- reset AFTER content set */
+
               setStatus("Opened: "+relPath);
               startStatTimer();
+              layoutEditorSoon();
             });
           })
           .fail((xhr)=>{ console.error("[file-browser] open error", xhr.status, xhr.responseText); notifyErr("Open error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
@@ -355,7 +407,9 @@
           .done((res)=>{
             const content = getEditorContent();
             currentFile = res.path || (oldPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
-            setEditorContent(content, currentFile); // mode may change with ext
+            setEditorContent(content, currentFile);  /* same text, new mode maybe */
+            markDirty(false);                         /* <-- do NOT flag dirty on rename */
+
             if (typeof res.mtime === "number" || typeof res.size === "number") {
               lastDisk = { mtime: res.mtime || lastDisk.mtime, size: res.size ?? lastDisk.size };
             }
@@ -418,42 +472,41 @@
 
       // ---------- Controls ----------
       $btnRefreshL.on("click", ()=> { scanFlows(); loadList(currentDir); });
-		$btnChangeBase.on("click", ()=>{
-		  const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
-		  const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
-							 suggested || baseInfo.baseDir || baseInfo.userDir || "");
-		  if (!abs) return;
+      $btnChangeBase.on("click", ()=>{
+        const suggested = (baseInfo.baseDir?.replace(/\/+$/,'') || "") + (currentDir && currentDir!=='.' ? '/'+currentDir : '');
+        const abs = prompt(`Enter absolute base folder path inside userDir:\n(userDir: ${baseInfo.userDir})`,
+                           suggested || baseInfo.baseDir || baseInfo.userDir || "");
+        if (!abs) return;
 
-		  function onOk(cfg){
-			baseInfo.baseDir = cfg.baseDir;
-			$baseInput.val(baseInfo.baseDir);
-			setStatus("Base set to: "+cfg.baseDir);
-			toast("Base updated","success");
-			scanFlows();
-			loadList(".");
-		  }
+        function onOk(cfg){
+          baseInfo.baseDir = cfg.baseDir;
+          $baseInput.val(baseInfo.baseDir);
+          setStatus("Base set to: "+cfg.baseDir);
+          toast("Base updated","success");
+          scanFlows();
+          loadList(".");
+        }
 
-		  ajax("POST","filebrowser/set-base",{ path: abs })
-			.done(onOk)
-			.fail((xhr)=>{
-			  const j = xhr.responseJSON || {};
-			  if (xhr.status === 400 && j.code === "OUTSIDE_USERDIR") {
-				const yn = confirm(
-				  `Warning: The selected folder is OUTSIDE Node-RED userDir.\n\n` +
-				  `userDir:\n${j.userDir}\n\nRequested:\n${j.requested}\n\n` +
-				  `This grants the Files panel access to that folder.\nProceed anyway?`
-				);
-				if (!yn) { notifyErr("Base not changed."); return; }
+        ajax("POST","filebrowser/set-base",{ path: abs })
+          .done(onOk)
+          .fail((xhr)=>{
+            const j = xhr.responseJSON || {};
+            if (xhr.status === 400 && j.code === "OUTSIDE_USERDIR") {
+              const yn = confirm(
+                `Warning: The selected folder is OUTSIDE Node-RED userDir.\n\n` +
+                `userDir:\n${j.userDir}\n\nRequested:\n${j.requested}\n\n` +
+                `This grants the Files panel access to that folder.\nProceed anyway?`
+              );
+              if (!yn) { notifyErr("Base not changed."); return; }
 
-				ajax("POST","filebrowser/set-base",{ path: abs, force: true })
-				  .done(onOk)
-				  .fail((xhr2)=> notifyErr("Set base error: "+(xhr2.responseJSON?.error || xhr2.statusText || xhr2.status)));
-			  } else {
-				notifyErr("Set base error: "+(j.error || xhr.statusText || xhr.status));
-			  }
-			});
-		});
-
+              ajax("POST","filebrowser/set-base",{ path: abs, force: true })
+                .done(onOk)
+                .fail((xhr2)=> notifyErr("Set base error: "+(xhr2.responseJSON?.error || xhr2.statusText || xhr2.status)));
+            } else {
+              notifyErr("Set base error: "+(j.error || xhr.statusText || xhr.status));
+            }
+          });
+      });
 
       $btnSave.on("click", doSave);
       $btnRenameFile.on("click", doRename);
@@ -471,17 +524,42 @@
           .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
       });
 
-      RED.events.on("editor:close", ()=>{ if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning"); });
+      // Warn + revive model when node editor closes
+      RED.events.on("editor:close", ()=>{
+        if (dirty) RED.notify("Unsaved changes in "+(currentFile||"file"),"warning");
+        setTimeout(()=>{
+          if (editorKind==="monaco" && window.monaco) {
+            if (!editorModel || editorModel.isDisposed()) {
+              ensureMonacoModel(currentFile);
+              suppressDirty = true;
+              try { editorModel.setValue(currentTextCache); } finally { suppressDirty = false; }
+              monacoEditor.setModel(editorModel);
+            }
+            layoutEditorSoon();
+          }
+        }, 0);
+      });
+
+      // Rescan & layout after deploy; and handle resizes
       if (RED && RED.events && RED.events.on) {
         RED.events.on("deploy", ()=> { scanFlows(); });
       }
+      RED.events.on("deploy", () => { setTimeout(layoutEditorSoon, 25); });
+      RED.events.on("editor:open", layoutEditorSoon);
+      RED.events.on("editor:close", () => { setTimeout(layoutEditorSoon, 0); });
+      RED.events.on && RED.events.on("workspace:resize", layoutEditorSoon);
+      RED.events.on && RED.events.on("sidebar:resize", layoutEditorSoon);
+      window.addEventListener("resize", layoutEditorSoon);
 
       // Sidebar tab
       RED.actions.add("file-browser:show", ()=> RED.sidebar.show("file-browser"));
       RED.sidebar.addTab({
         id:"file-browser", name:"Files", label:"Files", iconClass:"fa fa-files-o",
         content:$root, action:"file-browser:show", enableOnEdit:true, toolbar:null,
-        onshow: function(){ if (!$tree.children().length) loadConfigThenList(); }
+        onshow: function(){
+          if (!$tree.children().length) loadConfigThenList();
+          layoutEditorSoon();
+        }
       });
 
       // Kickoff
