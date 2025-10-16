@@ -93,6 +93,19 @@
     };
   })();
 
+  // ---- Word wrap preference (OFF by default) ----
+  const FB_WRAP_KEY = "filebrowser.wordwrap";
+  const FB_WRAP_DEFAULT = false; // default disabled
+  function wrapEnabled(){
+    const v = localStorage.getItem(FB_WRAP_KEY);
+    return v ? v === "1" : FB_WRAP_DEFAULT;
+  }
+  function setWrapEnabled(on){
+    if (on) localStorage.setItem(FB_WRAP_KEY, "1");
+    else localStorage.removeItem(FB_WRAP_KEY);
+  }
+
+
   // ---------- Monaco loader (with textarea fallback) ----------
   function loadScript(src){
     return new Promise((res,rej)=>{
@@ -190,6 +203,15 @@
       const $btnDeleteFile = $('<button class="red-ui-button"><i class="fa fa-trash"></i> Delete</button>').prop("disabled", true);
       const $btnNewDir     = $('<button class="red-ui-button"><i class="fa fa-folder-o"></i> New folder</button>');
       const $btnSave       = $('<button class="red-ui-button"><i class="fa fa-save"></i> Save</button>').prop("disabled", true);
+      const $btnWrap = $('<button class="red-ui-button" title="Toggle word wrap"><i class="fa fa-align-left"></i> Wrap</button>')
+        .on("click", ()=>{
+          const on = !wrapEnabled();
+          setWrapEnabled(on);
+          applyWrap();
+          $btnWrap.attr("title", "Toggle word wrap (currently "+(on?"ON":"OFF")+")");
+          RED.notify(on ? "Wrap ON" : "Wrap OFF", "compact");
+        });
+	  
       const $btnDebug      = $('<button class="red-ui-button fb-debug-toggle" title="Toggle debug"><i class="fa fa-bug"></i></button>')
         .on("click", ()=>{ const on = DBG.toggle(); RED.notify(on?"Debug ON":"Debug OFF","compact"); });
 
@@ -198,6 +220,7 @@
 
       // Keep original order; add bug button only if debug master is ON
       $toolbar.append($btnNewFile, $btnRenameFile, $btnDeleteFile, $btnNewDir, $btnSave, $crumb);
+	  $toolbar.append($btnWrap);
       if (fbDebugEnabled()) $toolbar.append($btnDebug);
 
       $right.append($toolbar, $editorHost, $status);
@@ -479,6 +502,21 @@
           .fail((xhr)=>{ console.warn("[file-browser] scan-flows error", xhr.status, xhr.responseText); /* non-fatal */ });
       }
 
+      function applyWrap(){
+        const on = wrapEnabled();
+        if (editorKind==="monaco" && monacoEditor){
+          try { monacoEditor.updateOptions({ wordWrap: on ? "on" : "off" }); } catch(e){}
+          layoutEditorSoon();
+        } else if (editorKind==="textarea" && textarea){
+          try {
+            // textarea wrap control
+            textarea.attr("wrap", on ? "soft" : "off");
+            textarea.css("white-space", on ? "pre-wrap" : "pre");
+            textarea.css("overflow", "auto");
+          } catch(e){}
+        }
+      }
+
       // ---------- Editor ----------
       function ensureEditorReady(){
         if (editorKind==="monaco" && monacoEditor) return Promise.resolve("monaco");
@@ -506,7 +544,7 @@
           if (typeof monacoEditor.onDidChangeCursorPosition === "function") {
             monacoEditor.onDidChangeCursorPosition(()=>{ if (!shouldIgnoreChanges("cursor")) scheduleRemember("cursor"); });
           }
-
+		  applyWrap();
           layoutEditorSoon();
           editorKind="monaco";
 
@@ -518,6 +556,7 @@
           textarea.on("input", ()=>{ if (currentFile){ markDirty(true);} if (!shouldIgnoreChanges("ta-input")) scheduleRemember("input"); });
           textarea.on("scroll", ()=>{ if (!shouldIgnoreChanges("ta-scroll")) scheduleRemember("scroll"); });
           textarea.on("keyup", ()=>{ if (!shouldIgnoreChanges("ta-keyup")) scheduleRemember("keyup"); });
+		  applyWrap();
           editorKind="textarea";
           if (currentFile) { restorePositionFor(currentFile); }
           return "textarea";
