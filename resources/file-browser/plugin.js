@@ -202,11 +202,20 @@ RED.plugins.registerPlugin("file-browser", {
         .fail(()=>{ scanFlows(); loadList("."); });
     }
 
-    function loadList(dir) {
-      ajax("GET", "filebrowser/list?path="+encodeURIComponent(dir))
-        .done((res)=>{ renderTree(res); setStatus("Listed: "+res.cwd); })
-        .fail((xhr)=>{ console.error("[file-browser] list error", xhr.status, xhr.responseText); notifyErr("List error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
-    }
+	function loadList(dir, opts) {
+	  opts = opts || {};
+	  return ajax("GET", "filebrowser/list?path=" + encodeURIComponent(dir))
+		.done((res)=>{
+		  renderTree(res);
+		  if (!opts.silent) setStatus("Listed: " + res.cwd);
+		})
+		.fail((xhr)=>{
+		  console.error("[file-browser] list error", xhr.status, xhr.responseText);
+		  notifyErr("List error: " + (xhr.responseJSON?.error || xhr.statusText || xhr.status));
+		});
+	}
+
+
 
     // ---------- Flows scan (client) ----------
     function scanFlows() {
@@ -224,7 +233,7 @@ RED.plugins.registerPlugin("file-browser", {
             }
           }
           referencedMap = map;
-          if ($tree.children().length) loadList(currentDir);
+          if ($tree.children().length) loadList(currentDir, { silent: true });
         })
         .fail((xhr)=>{ console.warn("[file-browser] scan-flows error", xhr.status, xhr.responseText); /* non-fatal */ });
     }
@@ -421,11 +430,16 @@ RED.plugins.registerPlugin("file-browser", {
     }
 
     // ---------- Save button state ----------
-    function updateSaveAppearance() {
-      if (dirty) { $btnSave.prop("disabled", false).addClass("fb-danger"); }
-      else { $btnSave.prop("disabled", true).removeClass("fb-danger"); }
-      if (onDiskChanged) { $status.text(($status.text()||"") + " (changed on disk)"); }
-    }
+	function updateSaveAppearance() {
+	  if (dirty) { $btnSave.prop("disabled", false).addClass("fb-danger"); }
+	  else { $btnSave.prop("disabled", true).removeClass("fb-danger"); }
+
+	  // Normalize the status text: remove any existing suffix, then re-apply if needed
+	  const base = ($status.text() || "").replace(/\s*\(changed on disk\)$/, "");
+	  if (onDiskChanged && base) $status.text(base + " (changed on disk)");
+	  else if (!onDiskChanged)  $status.text(base);
+	}
+
     function markDirty(val) { dirty = !!val; updateSaveAppearance(); }
 
     function stopStatTimer(){ if (statTimer){ clearInterval(statTimer); statTimer=null; } }
@@ -484,18 +498,32 @@ RED.plugins.registerPlugin("file-browser", {
     $btnSave.on("click", doSave);
     $btnRenameFile.on("click", doRename);
     $btnDeleteFile.on("click", doDelete);
-    $btnNewFile.on("click", ()=>{
-      const name = prompt("New file name:"); if (!name) return;
-      ajax("POST","filebrowser/new-file",{ dir: currentDir, name })
-        .done((res)=>{ setStatus("Created file: "+res.path); toast("File created","success"); loadList(currentDir); scanFlows(); })
-        .fail((xhr)=> notifyErr("New file error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
-    });
-    $btnNewDir.on("click", ()=>{
-      const name = prompt("New folder name:"); if (!name) return;
-      ajax("POST","filebrowser/new-folder",{ dir: currentDir, name })
-        .done((res)=>{ setStatus("Created folder: "+res.path); toast("Folder created","success"); loadList(currentDir); })
-        .fail((xhr)=> notifyErr("New folder error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)));
-    });
+	$btnNewFile.on("click", ()=>{
+	  const name = prompt("New file name:"); if (!name) return;
+	  ajax("POST","filebrowser/new-file",{ dir: currentDir, name })
+		.done((res)=>{
+		  setStatus("Created file: " + res.path);
+		  toast("File created","success");
+		  openFile(res.path);                       // sets “Opened: <file>”
+		  loadList(currentDir, { silent: true })    // refresh tree without overwriting status
+			.always(()=>{ scanFlows(); });          // keep your existing behavior
+		})
+		.fail((xhr)=> notifyErr("New file error: " + (xhr.responseJSON?.error || xhr.statusText || xhr.status)));
+	});
+
+
+
+	$btnNewDir.on("click", ()=>{
+	  const name = prompt("New folder name:"); if (!name) return;
+	  ajax("POST","filebrowser/new-folder",{ dir: currentDir, name })
+		.done((res)=>{
+		  setStatus("Created folder: " + res.path);
+		  toast("Folder created","success");
+		  currentDir = res.path;     // switch into the newly created folder
+		  loadList(currentDir);      // show its contents
+		})
+		.fail((xhr)=> notifyErr("New folder error: " + (xhr.responseJSON?.error || xhr.statusText || xhr.status)));
+	});
 
     // Warn + revive model when node editor closes
     RED.events.on("editor:close", ()=>{
