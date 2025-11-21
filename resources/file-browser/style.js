@@ -32,18 +32,25 @@ function ensureStyle() {
     }
     .fb-debug-panel pre { margin:0; white-space:pre-wrap; word-break:break-word; }
     .fb-debug-toggle { margin-left: 6px; }
-    /* context menu */
-    .fb-ctx {
-      position: fixed;
-      z-index: 10000;
-      background: var(--red-ui-secondary-background);
-      border: 1px solid var(--red-ui-secondary-border-color, #ccc);
-      border-radius: 6px;
-      min-width: 180px;
-      box-shadow: 0 8px 24px rgba(0,0,0,.20);
-      padding: 4px 0;
-      user-select: none;
-    }
+    
+	/* context menu */
+	.fb-ctx {
+	  position: fixed;
+	  z-index: 10000;
+	  background: var(--red-ui-secondary-background);
+	  border: 1px solid var(--red-ui-secondary-border-color, #ccc);
+	  border-radius: 6px;
+	  min-width: 180px;
+	  box-shadow: 0 8px 24px rgba(0,0,0,.20);
+	  padding: 4px 0;
+	  user-select: none;
+
+	  /* font, Windows-like */
+	  font-family: system-ui, -apple-system, "Segoe UI Variable", "Segoe UI",
+				   Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+	  font-size: 13px;
+	  line-height: 1.25;
+	}
     .fb-ctx .item {
       padding: 6px 10px;
       cursor: pointer;
