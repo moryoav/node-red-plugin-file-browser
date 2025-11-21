@@ -6,7 +6,7 @@ function createConfig(RED) {
   const USER_DIR = path.resolve(RED.settings.userDir || process.cwd());
   const CONFIG_FILE = path.join(USER_DIR, ".filebrowser.config.json");
   const settingsDefault = RED.settings.get("fileBrowser") || {};
-  const DEFAULT_MAX = settingsDefault.maxBytes || 5 * 1024 * 1024; // 5MB
+  const DEFAULT_MAX = settingsDefault.maxBytes || 50 * 1024 * 1024; // 50MB
 
   async function readJSON(file) {
     try {

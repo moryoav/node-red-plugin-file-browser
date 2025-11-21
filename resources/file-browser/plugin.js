@@ -66,6 +66,56 @@ RED.plugins.registerPlugin("file-browser", {
     $right.append($toolbar, $editorHost, $status);
     $root.append($left, $right);
 
+    // --- Context menu element and helpers ---
+    const $ctx = $('<div class="fb-ctx" style="display:none;"></div>').appendTo(document.body);
+
+    function hideCtx() {
+      $ctx.hide().empty();
+      $(document).off('mousedown.fbctx keydown.fbctx');
+    }
+
+    function showCtx(e, item) {
+      hideCtx();
+
+      // Build menu items based on item.type
+      const rows = [];
+      if (item.type === "file") {
+        rows.push({ icon:"fa-file-text-o", label:"Open", fn: ()=> openFile(item.path) });
+        rows.push({ icon:"fa-pencil",      label:"Rename", fn: ()=> renamePath(item.path) });
+        rows.push({ type:"sep" });
+        rows.push({ icon:"fa-trash",       label:"Delete file", fn: ()=> deletePath(item.path, false) });
+      } else {
+        rows.push({ icon:"fa-folder",      label:"Open", fn: ()=> loadList(item.path) });
+        rows.push({ icon:"fa-file-o",      label:"New file here",   fn: ()=> newFileIn(item.path) });
+        rows.push({ icon:"fa-folder-o",    label:"New folder here", fn: ()=> newFolderIn(item.path) });
+        rows.push({ icon:"fa-pencil",      label:"Rename", fn: ()=> renamePath(item.path) });
+        rows.push({ type:"sep" });
+        rows.push({ icon:"fa-trash",       label:"Delete folder", fn: ()=> deletePath(item.path, true) });
+      }
+
+      for (const r of rows) {
+        if (r.type === "sep") { $ctx.append('<div class="sep"></div>'); continue; }
+        const $it = $('<div class="item"></div>');
+        $it.append($('<i class="fa"></i>').addClass(r.icon));
+        $it.append(document.createTextNode(r.label));
+        $it.on('click', ()=> { hideCtx(); r.fn(); });
+        $ctx.append($it);
+      }
+
+      // Position near mouse, clamped to viewport
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const menuW = 220, menuH = 220;
+      let x = e.clientX, y = e.clientY;
+      if (x + menuW > vw) x = Math.max(8, vw - menuW - 8);
+      if (y + menuH > vh) y = Math.max(8, vh - menuH - 8);
+      $ctx.css({ left: x + "px", top: y + "px", display:"block" });
+
+      // Dismiss on click elsewhere or Esc
+      $(document).on('mousedown.fbctx', (ev)=>{ if (!$.contains($ctx[0], ev.target)) hideCtx(); });
+      $(document).on('keydown.fbctx',  (ev)=>{ if (ev.key === "Escape") hideCtx(); });
+    }
+
+
     // ---------- State ----------
     let baseInfo = { baseDir:"", userDir:"" };
     let currentDir = ".";
@@ -170,6 +220,7 @@ RED.plugins.registerPlugin("file-browser", {
 
       currentDir = list.cwd;
       setCrumb(list.breadcrumb);
+      hideCtx();	  
       $tree.empty();
 
       const rows=[];
@@ -189,6 +240,14 @@ RED.plugins.registerPlugin("file-browser", {
 
         if (it.type==="dir") $r.on('click', ()=> loadList(it.path));
         else $r.on('click', ()=> openFile(it.path));
+
+        // right click context menu
+        $r.on('contextmenu', (ev)=>{
+          ev.preventDefault();
+          ev.stopPropagation();
+          showCtx(ev, it);
+        });
+
 
         rows.push($r);
       });
@@ -429,6 +488,87 @@ RED.plugins.registerPlugin("file-browser", {
         .fail((xhr)=>{ console.error("[file-browser] delete error", xhr.status, xhr.responseText); notifyErr("Delete error: "+(xhr.responseJSON?.error || xhr.statusText || xhr.status)); });
     }
 
+    // ---------- Generic ops for context menu ----------
+    function renamePath(relPath) {
+      const base = relPath.split("/").pop();
+      const newName = prompt("Rename to:", base);
+      if (newName == null) return;
+      const trimmed = String(newName).trim();
+      if (!trimmed || trimmed === base) return;
+      if (/[\\/:*?"<>|]/.test(trimmed)) { notifyErr("Invalid name."); return; }
+
+      ajax("POST","filebrowser/rename",{ path: relPath, newName: trimmed })
+        .done((res)=>{
+          toast("Renamed","success");
+          // If we had this file open, update currentFile and status
+          if (currentFile && relPath === currentFile) {
+            currentFile = res.path || (relPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
+            syncCtx();
+            setStatus("Renamed to: " + currentFile);
+          }
+          loadList(currentDir, { silent: false });
+          scanFlows();
+        })
+        .fail((xhr)=> notifyErr("Rename error: " + (xhr.responseJSON?.error || xhr.statusText || xhr.status)));
+    }
+
+    function deletePath(relPath, isDir) {
+      const name = relPath.split("/").pop();
+      const ok = confirm(`Delete ${isDir ? "folder" : "file"} "${name}" permanently${isDir ? " (recursively)" : ""}?`);
+      if (!ok) return;
+
+      ajax("POST","filebrowser/delete",{ path: relPath })
+        .done(()=>{
+          toast((isDir ? "Folder" : "File") + " deleted","success");
+
+          if (!isDir && currentFile === relPath) {
+            // Clear editor if we deleted the open file
+            lsDel(keyFor(currentFile));
+            stopStatTimer();
+            currentFile = null;
+            syncCtx();
+            markDirty(false);
+            setEditorContent("", "");
+            setStatus("Deleted: " + name);
+          } else {
+            setStatus((isDir ? "Folder" : "File") + " deleted: " + name);
+          }
+
+          // If we deleted the folder we are currently viewing, step up
+          if (isDir && currentDir === relPath) {
+            const parent = currentDir.split("/").filter(Boolean).slice(0,-1).join("/") || ".";
+            currentDir = parent;
+          }
+
+          loadList(currentDir, { silent: false });
+          scanFlows();
+        })
+        .fail((xhr)=> notifyErr("Delete error: " + (xhr.responseJSON?.error || xhr.statusText || xhr.status)));
+    }
+
+    function newFileIn(dirPath) {
+      const name = prompt("New file name:"); if (!name) return;
+      ajax("POST","filebrowser/new-file",{ dir: dirPath, name })
+        .done((res)=>{
+          toast("File created","success");
+          openFile(res.path);
+          loadList(dirPath, { silent: true });
+          scanFlows();
+        })
+        .fail((xhr)=> notifyErr("New file error: " + (xhr.responseJSON?.error || xhr.statusText || xhr.status)));
+    }
+
+    function newFolderIn(dirPath) {
+      const name = prompt("New folder name:"); if (!name) return;
+      ajax("POST","filebrowser/new-folder",{ dir: dirPath, name })
+        .done((res)=>{
+          toast("Folder created","success");
+          currentDir = res.path;
+          loadList(currentDir);
+        })
+        .fail((xhr)=> notifyErr("New folder error: " + (xhr.responseJSON?.error || xhr.statusText || xhr.status)));
+    }
+
     // ---------- Save button state ----------
 	function updateSaveAppearance() {
 	  if (dirty) { $btnSave.prop("disabled", false).addClass("fb-danger"); }
@@ -552,9 +692,10 @@ RED.plugins.registerPlugin("file-browser", {
     RED.events.on("deploy", () => { setTimeout(()=>{ layoutEditorSoon(); restorePositionFor(currentFile, {guardMs:700}); }, 25); });
     RED.events.on("editor:open", () => { layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:700}), 0); });
     RED.events.on("editor:close", () => { setTimeout(layoutEditorSoon, 0); });
-    RED.events.on && RED.events.on("workspace:resize", ()=>{ layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
-    RED.events.on && RED.events.on("sidebar:resize",   ()=>{ layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
-    window.addEventListener("resize", ()=>{ layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
+	RED.events.on && RED.events.on("workspace:resize", ()=>{ hideCtx(); layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
+	RED.events.on && RED.events.on("sidebar:resize",   ()=>{ hideCtx(); layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
+	window.addEventListener("resize", ()=>{ hideCtx(); layoutEditorSoon(); setTimeout(()=>restorePositionFor(currentFile, {guardMs:600}), 0); });
+
 
     // Sidebar tab
     RED.actions.add("file-browser:show", ()=> RED.sidebar.show("file-browser"));
