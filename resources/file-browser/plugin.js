@@ -122,7 +122,8 @@ RED.plugins.registerPlugin("file-browser", {
     let currentFile = null;
     let monacoEditor = null, textarea = null, editorKind = "none";
     let dirty = false;
-
+	let editorHotkeyInstalled = false;
+	
     // Monaco persistent model state
     let editorModel = null;
     let editorModelUri = null;
@@ -312,6 +313,24 @@ RED.plugins.registerPlugin("file-browser", {
       }
     }
 
+    function installEditorHotkey() {
+      if (editorHotkeyInstalled) return;
+      editorHotkeyInstalled = true;
+      try {
+        $editorHost[0].addEventListener("keydown", function(ev){
+          const k = ev.key || ev.keyCode;
+          const isS = (typeof k === "string" ? k.toLowerCase() === "s" : k === 83);
+          if ((ev.ctrlKey || ev.metaKey) && isS) {
+            if (!currentFile) return; // nothing to save
+            ev.preventDefault();
+            ev.stopPropagation();
+            doSave();
+          }
+        }, true); // capture so we beat global handlers
+      } catch(e) { /* ignore */ }
+    }
+
+
     // ---------- Editor ----------
     function ensureEditorReady(){
       if (editorKind==="monaco" && monacoEditor) return Promise.resolve("monaco");
@@ -322,6 +341,7 @@ RED.plugins.registerPlugin("file-browser", {
         editorModelUri = window.monaco.Uri.parse("inmemory://file-browser/current");
         editorModel = window.monaco.editor.createModel("", "plaintext", editorModelUri);
         monacoEditor.setModel(editorModel);
+		installEditorHotkey();
 
         monacoEditor.onDidChangeModelContent(()=>{
           if (suppressDirty) {
@@ -349,6 +369,9 @@ RED.plugins.registerPlugin("file-browser", {
       }).catch(()=>{
         textarea = $("<textarea>").css({position:"absolute", inset:"0", width:"100%", height:"100%", fontFamily:"monospace", fontSize:"12px", padding:"8px", boxSizing:"border-box"});
         $editorHost.empty().append(textarea);
+		installEditorHotkey();
+		
+	
         textarea.on("input", ()=>{ if (currentFile){ markDirty(true);} if (!shouldIgnoreChanges("ta-input")) scheduleRemember("input"); });
         textarea.on("scroll", ()=>{ if (!shouldIgnoreChanges("ta-scroll")) scheduleRemember("scroll"); });
         textarea.on("keyup", ()=>{ if (!shouldIgnoreChanges("ta-keyup")) scheduleRemember("keyup"); });
