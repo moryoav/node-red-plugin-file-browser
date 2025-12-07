@@ -97,6 +97,29 @@ function ensureStyle() {
       text-align:right;
       padding-left:8px;
     }	
+    .fb-split-handle {
+      width: 14px;
+      cursor: col-resize;
+      background: var(--red-ui-secondary-background);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .fb-split-handle::before {
+      content: "";
+      width: 2px;
+      height: 40px;
+      border-radius: 999px;
+      background: rgba(0,0,0,0.25);
+    }
+    .fb-split-handle:hover::before {
+      background: rgba(0,0,0,0.45);
+    }
+    .fb-root-splitting .fb-split-handle {
+      background: var(--red-ui-secondary-background-alt, #dcdcdc);
+    }
+
+	
   `;
   const s = document.createElement("style");
   s.id = "fb-style";

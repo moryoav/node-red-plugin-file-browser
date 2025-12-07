@@ -9,7 +9,16 @@ RED.plugins.registerPlugin("file-browser", {
     const $root   = $("<div>").css({position:"relative", height:"100%", display:"flex", gap:"8px"});
 
     // Left panel (tree + base controls)
-    const $left   = $("<div>").css({width:"38%", minWidth:"280px", height:"100%", display:"flex", flexDirection:"column", borderRight:"1px solid var(--red-ui-secondary-background)"});
+    const $left   = $("<div>").css({
+      width:"38%",
+      minWidth:"280px",
+      height:"100%",
+      display:"flex",
+      flexDirection:"column",
+      borderRight:"1px solid var(--red-ui-secondary-background)",
+      flex:"0 0 auto"
+    });
+
     const $leftHdr= $("<div>").css({
       padding:"8px",
       display:"grid",
@@ -95,8 +104,45 @@ RED.plugins.registerPlugin("file-browser", {
     $toolbar.append($btnWrap);
     if (fbDebugEnabled()) $toolbar.append($btnDebug);
 
+	const $split = $("<div>").addClass("fb-split-handle");
     $right.append($toolbar, $editorHost, $status);
-    $root.append($left, $right);
+    $root.append($left, $split, $right);
+
+
+    // ----- Splitter drag between left tree and right editor -----
+    $split.on("mousedown", (ev)=> {
+      if (ev.button !== 0) return; // left button only
+      ev.preventDefault();
+      ev.stopPropagation();
+
+      const rootWidth = $root.width();
+      isDraggingSplit = true;
+      splitDrag.startX    = ev.clientX;
+      splitDrag.startLeft = $left.width();
+      splitDrag.minLeft   = 220; // minimum width for left
+      // ensure right has at least 260 px
+      splitDrag.maxLeft   = Math.max(splitDrag.minLeft + 200, rootWidth - 260);
+
+      $root.addClass("fb-root-splitting");
+
+      $(document).on("mousemove.fb-split", (e)=> {
+        if (!isDraggingSplit) return;
+        const dx = e.clientX - splitDrag.startX;
+        let newLeft = splitDrag.startLeft + dx;
+        if (newLeft < splitDrag.minLeft) newLeft = splitDrag.minLeft;
+        if (newLeft > splitDrag.maxLeft) newLeft = splitDrag.maxLeft;
+        $left.css("width", newLeft + "px");
+        layoutEditorSoon();
+      });
+
+      $(document).on("mouseup.fb-split", ()=> {
+        if (!isDraggingSplit) return;
+        isDraggingSplit = false;
+        $(document).off("mousemove.fb-split mouseup.fb-split");
+        $root.removeClass("fb-root-splitting");
+      });
+    });
+
 
     // --- Context menu element and helpers ---
     const $ctx = $('<div class="fb-ctx" style="display:none;"></div>').appendTo(document.body);
@@ -160,6 +206,9 @@ RED.plugins.registerPlugin("file-browser", {
     let sortDir   = "asc";     // "asc" or "desc"
     let lastList  = null;      // last list() response for re-sorting in place	
 	let editorHotkeyInstalled = false;
+	
+    let isDraggingSplit = false;
+    const splitDrag = { startX: 0, startLeft: 0, minLeft: 220, maxLeft: 0 };
 	
     // Monaco persistent model state
     let editorModel = null;
