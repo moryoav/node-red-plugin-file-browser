@@ -72,7 +72,31 @@ function ensureStyle() {
     .fb-row-selected {
       background: var(--red-ui-secondary-background-alt, #e5e5e5);
     }	
-	
+    .fb-tree-header {
+      display:flex;
+      align-items:center;
+      padding:4px 6px;
+      font-size:0.8em;
+      text-transform:uppercase;
+      opacity:0.8;
+      border-bottom:1px solid var(--red-ui-secondary-background);
+      user-select:none;
+    }
+    .fb-tree-header span {
+      cursor:pointer;
+      white-space:nowrap;
+    }
+    .fb-tree-header-name {
+      flex:1 1 auto;
+      display:flex;
+      align-items:center;
+      gap:4px;
+    }
+    .fb-tree-header-mod {
+      flex:0 0 auto;
+      text-align:right;
+      padding-left:8px;
+    }	
   `;
   const s = document.createElement("style");
   s.id = "fb-style";

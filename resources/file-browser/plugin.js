@@ -29,9 +29,41 @@ RED.plugins.registerPlugin("file-browser", {
     const $treeWrap= $("<div>").css({flex:"1 1 auto", overflow:"auto"});
     const $tree   = $("<div>").attr("id","fb-tree").css({padding:"6px"});
 
+    const $treeHeader   = $("<div>").addClass("fb-tree-header");
+    const $hdrName      = $('<span class="fb-tree-header-name">Name</span>');
+    const $hdrModified  = $('<span class="fb-tree-header-mod">Modified</span>');
+    $treeHeader.append($hdrName, $hdrModified);
+
+    function applySortAndRender() {
+      if (!lastList) return;
+      renderTree(lastList);
+    }
+
+    $hdrName.on("click", ()=> {
+      if (sortField === "name") {
+        sortDir = (sortDir === "asc" ? "desc" : "asc");
+      } else {
+        sortField = "name";
+        sortDir = "asc";
+      }
+      applySortAndRender();
+    });
+
+    $hdrModified.on("click", ()=> {
+      if (sortField === "mtime") {
+        sortDir = (sortDir === "asc" ? "desc" : "asc");
+      } else {
+        sortField = "mtime";
+        sortDir = "asc";
+      }
+      applySortAndRender();
+    });
+
+
     $leftHdr.append($baseLabel, $baseWrap, $btnChangeBase, $btnRefreshL);
     $treeWrap.append($tree);
-    $left.append($leftHdr, $treeWrap);
+    $left.append($leftHdr, $treeHeader, $treeWrap);
+
 
     // Right panel (editor + ops)
     const $right  = $("<div>").css({flex:"1 1 auto", height:"100%", display:"flex", flexDirection:"column"});
@@ -123,6 +155,10 @@ RED.plugins.registerPlugin("file-browser", {
     let monacoEditor = null, textarea = null, editorKind = "none";
     let dirty = false;
 	let selectedPath = null;
+    
+    let sortField = "name";    // "name" or "mtime"
+    let sortDir   = "asc";     // "asc" or "desc"
+    let lastList  = null;      // last list() response for re-sorting in place	
 	let editorHotkeyInstalled = false;
 	
     // Monaco persistent model state
@@ -138,7 +174,61 @@ RED.plugins.registerPlugin("file-browser", {
 
     // referenced files: path -> { names:[], ids:[] }
     let referencedMap = new Map();
-	
+    function formatMtime(ms) {
+      if (!ms) return "";
+      const d = new Date(ms);
+      const pad = (n)=> String(n).padStart(2,"0");
+      const yyyy = d.getFullYear();
+      const mm   = pad(d.getMonth() + 1);
+      const dd   = pad(d.getDate());
+      const hh   = pad(d.getHours());
+      const mi   = pad(d.getMinutes());
+      return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
+    }
+
+    function sortItems(list) {
+      if (!list || !Array.isArray(list.items)) return [];
+      const items = list.items.slice(); // shallow copy
+
+      items.sort((a, b) => {
+        // keep directories before files
+        if (a.type !== b.type) {
+          return a.type === "dir" ? -1 : 1;
+        }
+
+        let cmp = 0;
+        if (sortField === "mtime") {
+          const am = a.mtime || 0;
+          const bm = b.mtime || 0;
+          cmp = am - bm;
+        } else {
+          // default: name
+          cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+        }
+
+        // tie breaker by name
+        if (cmp === 0) {
+          cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+        }
+
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+
+      return items;
+    }
+
+    function updateSortHeader() {
+      const nameArrow = sortField === "name"
+        ? (sortDir === "asc" ? " ▲" : " ▼")
+        : "";
+      const modArrow = sortField === "mtime"
+        ? (sortDir === "asc" ? " ▲" : " ▼")
+        : "";
+
+      $hdrName.text("Name" + nameArrow);
+      $hdrModified.text("Modified" + modArrow);
+    }
+
     function refreshSelectedRow() {
       const $rows = $tree.find(".fb-row");
       $rows.removeClass("fb-row-selected");
@@ -150,7 +240,7 @@ RED.plugins.registerPlugin("file-browser", {
         }
       });
     }
-
+	
     // Expose a lightweight mirror so state.js can access what it needs.
     const FB_CTX = (window.FB_CTX = window.FB_CTX || {});
     function syncCtx(){
@@ -228,6 +318,8 @@ RED.plugins.registerPlugin("file-browser", {
     }
 
     function renderTree(list){
+      if (!list) return;
+      lastList = list;		
       baseInfo.baseDir = list.baseDir || baseInfo.baseDir;
       baseInfo.userDir = list.userDir || baseInfo.userDir;
       $baseInput.val(baseInfo.baseDir || "");
@@ -236,10 +328,14 @@ RED.plugins.registerPlugin("file-browser", {
       setCrumb(list.breadcrumb);
       hideCtx();	  
       $tree.empty();
-
+	  
+	  updateSortHeader();
+	  
       const rows=[];
       if (list.cwd!==".") rows.push(rowUp());
-      list.items.forEach((it)=>{
+	  const items = sortItems(list);
+	  
+      items.forEach((it)=>{
         const meta = (it.type==="file") ? referencedMap.get(it.path) : null;
         const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
 		$r.data("path", it.path);
@@ -252,7 +348,12 @@ RED.plugins.registerPlugin("file-browser", {
           $r.attr("title", "Referenced by: " + meta.names.join(", "));
         }
         $r.append($name);
-
+		
+        const $mtime = $('<span>')
+          .text(formatMtime(it.mtime))
+          .css({flex:"0 0 auto", fontSize:"0.8em", opacity:0.7, whiteSpace:"nowrap", marginLeft:"8px"});
+        $r.append($mtime);
+		
         if (it.type==="dir") $r.on('click', ()=> loadList(it.path));
         else $r.on('click', ()=> openFile(it.path));
 
