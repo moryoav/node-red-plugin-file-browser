@@ -122,6 +122,7 @@ RED.plugins.registerPlugin("file-browser", {
     let currentFile = null;
     let monacoEditor = null, textarea = null, editorKind = "none";
     let dirty = false;
+	let selectedPath = null;
 	let editorHotkeyInstalled = false;
 	
     // Monaco persistent model state
@@ -137,6 +138,18 @@ RED.plugins.registerPlugin("file-browser", {
 
     // referenced files: path -> { names:[], ids:[] }
     let referencedMap = new Map();
+	
+    function refreshSelectedRow() {
+      const $rows = $tree.find(".fb-row");
+      $rows.removeClass("fb-row-selected");
+      if (!selectedPath) return;
+      $rows.each(function(){
+        const $r = $(this);
+        if ($r.data("path") === selectedPath) {
+          $r.addClass("fb-row-selected");
+        }
+      });
+    }
 
     // Expose a lightweight mirror so state.js can access what it needs.
     const FB_CTX = (window.FB_CTX = window.FB_CTX || {});
@@ -229,6 +242,7 @@ RED.plugins.registerPlugin("file-browser", {
       list.items.forEach((it)=>{
         const meta = (it.type==="file") ? referencedMap.get(it.path) : null;
         const $r=$('<div class="fb-row">').css({display:"flex",alignItems:"center",padding:"4px 2px",cursor:"pointer"});
+		$r.data("path", it.path);
 
         const icons = iconFor(it, meta);
         icons.forEach(n=> $r.append(n));
@@ -253,6 +267,7 @@ RED.plugins.registerPlugin("file-browser", {
         rows.push($r);
       });
       rows.forEach(r=>$tree.append(r));
+	  refreshSelectedRow();
     }
 
     // ---------- Loaders ----------
@@ -412,10 +427,14 @@ RED.plugins.registerPlugin("file-browser", {
 
     // ---------- File ops ----------
     function openFile(relPath) {
+      selectedPath = relPath;
+      refreshSelectedRow();
+
       // Remember the previous file's position before switching
       saveViewState("switch-away");
 
       ajax("GET", "filebrowser/open?path="+encodeURIComponent(relPath))
+
         .done((res)=>{
           ensureEditorReady().then(()=>{
             currentFile=relPath;
@@ -470,7 +489,9 @@ RED.plugins.registerPlugin("file-browser", {
           const oldState = lsGet(oldKey);
 
           currentFile = res.path || (oldPath.split("/").slice(0,-1).concat([trimmed]).join("/"));
+          selectedPath = currentFile;
           syncCtx();
+
 
           setEditorContent(content, currentFile);
           markDirty(false);
@@ -499,7 +520,9 @@ RED.plugins.registerPlugin("file-browser", {
           setStatus("Deleted: " + name);
           toast("Deleted","success");
           currentFile = null;
+          selectedPath = null;
           syncCtx();
+
 
           $btnRenameFile.prop("disabled", true);
           $btnDeleteFile.prop("disabled", true);
@@ -549,6 +572,7 @@ RED.plugins.registerPlugin("file-browser", {
             lsDel(keyFor(currentFile));
             stopStatTimer();
             currentFile = null;
+            selectedPath = null;
             syncCtx();
             markDirty(false);
             setEditorContent("", "");

@@ -69,6 +69,9 @@ function ensureStyle() {
       margin: 4px 0;
     }
     .fb-ctx .item .fa { width: 14px; text-align: center; }
+    .fb-row-selected {
+      background: var(--red-ui-secondary-background-alt, #e5e5e5);
+    }	
 	
   `;
   const s = document.createElement("style");

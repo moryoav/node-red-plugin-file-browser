@@ -1,6 +1,6 @@
 {
   "name": "@moryoav/node-red-plugin-file-browser",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "Node-RED editor plugin: Files sidebar with folder tree, text editor, create/save files;",
   "license": "MIT",
   "author": "Yoav (moryoav)",
